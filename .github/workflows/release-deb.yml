@@ -1,0 +1,81 @@
+name: Build and Release Debian (.deb) Package
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Semantic version for the .deb release (e.g., 1.0.0)"
+        required: true
+        default: "1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb-release:
+    name: Build snipclip .deb & Publish GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release version from GitHub tag or input
+        id: meta
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RAW_VER="${{ inputs.release_version }}"
+          else
+            RAW_VER="${GITHUB_REF_NAME}"
+          fi
+          CLEAN_VER="${RAW_VER#v}"
+          echo "version=${CLEAN_VER}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${CLEAN_VER}" >> "${GITHUB_OUTPUT}"
+          echo "deb_file=snipclip_${CLEAN_VER}_all.deb" >> "${GITHUB_OUTPUT}"
+
+      - name: Build .deb package synced to release version ${{ steps.meta.outputs.version }}
+        run: |
+          chmod +x scripts/build-deb.sh
+          ./scripts/build-deb.sh "${{ steps.meta.outputs.version }}"
+
+      - name: Run full Linux & .deb verification test suite
+        run: |
+          python3 -m unittest discover -s linux/tests -p "test_*.py" -v
+          dpkg-deb --info "public/releases/${{ steps.meta.outputs.deb_file }}"
+          dpkg-deb --contents "public/releases/${{ steps.meta.outputs.deb_file }}"
+
+      - name: Upload .deb artifact to workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.deb_file }}
+          path: |
+            public/releases/${{ steps.meta.outputs.deb_file }}
+            public/releases/SHA256SUMS
+
+      - name: Publish .deb to GitHub Releases page
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "SnipClip ${{ steps.meta.outputs.tag }}"
+          generate_release_notes: true
+          body: |
+            ## SnipClip ${{ steps.meta.outputs.tag }} — Debian / Ubuntu Package
+
+            Windows Snipping Tool clone for Debian-based Linux distributions with automatic **X11** and **Wayland** detection.
+
+            ### Installation (Debian 12+, Ubuntu 22.04+, Linux Mint, Pop!_OS)
+            ```bash
+            sudo apt install ./${{ steps.meta.outputs.deb_file }}
+            ```
+
+            ### Version Verification
+            ```bash
+            snipclip --version
+            # SnipClip ${{ steps.meta.outputs.version }} (${{ steps.meta.outputs.deb_file }}, release ${{ steps.meta.outputs.tag }})
+            ```
+          files: |
+            public/releases/${{ steps.meta.outputs.deb_file }}
+            public/releases/SHA256SUMS

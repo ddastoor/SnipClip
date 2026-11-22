@@ -1,0 +1,14 @@
+{
+  "packageName": "snipclip",
+  "version": "1.0.0",
+  "releaseTag": "v1.0.0",
+  "architecture": "all",
+  "debFilename": "snipclip_1.0.0_all.deb",
+  "downloadPath": "/releases/snipclip_1.0.0_all.deb",
+  "sha256": "76634f9f22ca28f842e93998bc3d5b739824f3bb889ebc4e54f5bf714e61e03f",
+  "sizeBytes": 18136,
+  "installedSizeKb": 77,
+  "builtAtIso": "2026-11-22T18:37:24Z",
+  "depends": "python3 (>= 3.10), python3-pyqt6, xdg-utils",
+  "recommends": "qt6-wayland, wl-clipboard, xclip, grim, x11-utils, xdg-desktop-portal"
+}

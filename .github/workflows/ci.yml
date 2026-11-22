@@ -1,0 +1,37 @@
+name: Continuous Integration Test Suite
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  test-and-package:
+    name: Run Linux, .deb & Web Test Suites
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install npm dependencies
+        run: npm ci || npm install
+
+      - name: Build Debian (.deb) package from VERSION
+        run: |
+          chmod +x scripts/build-deb.sh scripts/run-tests.sh
+          ./scripts/build-deb.sh
+
+      - name: Execute full repository test suite
+        run: ./scripts/run-tests.sh
+
+      - name: Verify production web build
+        run: npm run build

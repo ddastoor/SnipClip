@@ -1,0 +1,8 @@
+{
+  "name": "SnipClip",
+  "description": "Windows Snipping Tool clone for Debian-based Linux systems with automatic X11 and Wayland detection, rectangular/window/fullscreen/freeform snips, annotation tools, and GitHub .deb release packaging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
