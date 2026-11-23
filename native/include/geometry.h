@@ -78,6 +78,22 @@ bool sc_hit_test_annotation(
     double threshold
 );
 
+#define SC_LAUNCHER_WIDTH 460
+#define SC_LAUNCHER_HEIGHT 200
+#define SC_EDITOR_MIN_WIDTH 560
+#define SC_EDITOR_MIN_HEIGHT 380
+#define SC_EDITOR_CHROME_W 48
+#define SC_EDITOR_CHROME_H 136
+
+void sc_compute_window_size(
+    int image_w,
+    int image_h,
+    int workarea_w,
+    int workarea_h,
+    int *out_w,
+    int *out_h
+);
+
 const char *sc_snip_mode_to_string(ScSnipMode mode);
 bool sc_snip_mode_from_string(const char *str, ScSnipMode *out_mode);
 

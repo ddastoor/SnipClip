@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -183,8 +184,56 @@ class NativeElfAndDebPackageTests(unittest.TestCase):
                 self.assertEqual(out_sock["protocol"], "wayland")
                 self.assertEqual(out_sock["wayland_display"], "wayland-0")
                 self.assertIn("socket", out_sock["detection_source"])
+
+                # 4. Explicit X11 DISPLAY overrides unreferenced Wayland socket when WAYLAND_DISPLAY is unset
+                env_x11_override = {
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "HOME": rt_dir,
+                    "XDG_RUNTIME_DIR": rt_dir,
+                    "DISPLAY": ":99",
+                }
+                out_x11_override = json.loads(
+                    subprocess.check_output(
+                        [str(self.packaged_bin), "--detect-display"],
+                        env=env_x11_override,
+                        text=True,
+                    )
+                )
+                self.assertEqual(out_x11_override["protocol"], "x11")
+                self.assertEqual(out_x11_override["x11_display"], ":99")
             finally:
                 srv.close()
+
+    def test_startup_window_matches_microsoft_snipping_tool_dimensions(self) -> None:
+        """Verify live GTK 3 startup window opens at compact 460x200 Snipping Tool dimensions."""
+        xvfb = shutil.which("xvfb-run")
+        if not xvfb:
+            self.skipTest("xvfb-run not installed in minimal container")
+
+        metrics_out = subprocess.check_output(
+            [
+                xvfb,
+                "-a",
+                "-s",
+                "-screen 0 1920x1080x24",
+                str(self.packaged_bin),
+                "--print-ui-metrics",
+            ],
+            text=True,
+        )
+        metrics = json.loads(metrics_out.strip())
+        self.assertEqual(metrics["launcher_default_w"], 460)
+        self.assertEqual(metrics["launcher_default_h"], 200)
+        self.assertLessEqual(
+            metrics["launcher_min_w"],
+            460,
+            "Launcher toolbar minimum width must never stretch wider than 460px",
+        )
+        self.assertLessEqual(
+            metrics["editor_min_w"],
+            600,
+            "Editor toolbar minimum width must stay compact and never span the screen",
+        )
 
     def test_deb_archive_uses_xz_compression_for_cross_distro_gui_installers(self) -> None:
         """Ensure .deb uses xz (never zstd) so Debian 12, KDE Discover, GNOME Software & GDebi never hang."""

@@ -242,6 +242,49 @@ bool sc_hit_test_annotation(
     return px >= min_x && px <= max_x && py >= min_y && py <= max_y;
 }
 
+void sc_compute_window_size(
+    int image_w,
+    int image_h,
+    int workarea_w,
+    int workarea_h,
+    int *out_w,
+    int *out_h
+) {
+    int w = SC_LAUNCHER_WIDTH;
+    int h = SC_LAUNCHER_HEIGHT;
+
+    if (image_w <= 0 || image_h <= 0) {
+        if (workarea_w > 120 && workarea_w - 32 < w) {
+            w = workarea_w - 32;
+        }
+        if (workarea_h > 120 && workarea_h - 32 < h) {
+            h = workarea_h - 32;
+        }
+    } else {
+        int max_w = (workarea_w > 0) ? (int)(workarea_w * 0.80) : 1100;
+        int max_h = (workarea_h > 0) ? (int)(workarea_h * 0.80) : 760;
+        if (max_w < 320) max_w = 320;
+        if (max_h < 240) max_h = 240;
+
+        w = image_w + SC_EDITOR_CHROME_W;
+        if (max_w < SC_EDITOR_MIN_WIDTH) {
+            w = max_w;
+        } else {
+            w = clamp_int(w, SC_EDITOR_MIN_WIDTH, max_w);
+        }
+
+        h = image_h + SC_EDITOR_CHROME_H;
+        if (max_h < SC_EDITOR_MIN_HEIGHT) {
+            h = max_h;
+        } else {
+            h = clamp_int(h, SC_EDITOR_MIN_HEIGHT, max_h);
+        }
+    }
+
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+}
+
 const char *sc_snip_mode_to_string(ScSnipMode mode) {
     switch (mode) {
         case SC_MODE_WINDOW: return "window";

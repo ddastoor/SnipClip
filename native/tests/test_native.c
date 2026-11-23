@@ -1,6 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "display_detect.h"
@@ -99,11 +102,96 @@ static void test_display_detection_cascade(void) {
     assert(strcmp(s5.gdk_backend, "x11") == 0);
     assert(strcmp(s5.clipboard_driver, "GtkClipboard + xclip") == 0);
 
-    /* 6. Reconcile headless with live GdkWaylandDisplay */
+    /* 6. Reconcile headless with live GdkWaylandDisplay (including full Wayland driver fields) */
     ScDisplaySession s6 = sc_detect_display_session_custom(mock_getenv, mock_has_bin, NULL, NULL, NULL, &stripped);
     assert(s6.protocol == SC_PROTO_HEADLESS);
     sc_reconcile_with_gdk_backend_name(&s6, "GdkWaylandDisplay");
     assert(s6.protocol == SC_PROTO_WAYLAND);
+    assert(strcmp(s6.protocol_name, "wayland") == 0);
+    assert(strcmp(s6.gdk_backend, "wayland,x11") == 0);
+    assert(s6.capture_driver[0] != '\0');
+    assert(s6.clipboard_driver[0] != '\0');
+
+    /* 7. Explicit DISPLAY env var wins over stale wayland-0 runtime socket when WAYLAND_DISPLAY is unset */
+    MockEnv x11_stale_wl = {
+        .xdg_session_type = "unspecified",
+        .wayland_display = NULL,
+        .display = ":0",
+        .desktop = "XFCE",
+        .has_xclip = true
+    };
+    ScDisplaySession s7 = sc_detect_display_session_custom(
+        mock_getenv, mock_has_bin, "wayland-0", ":0", NULL, &x11_stale_wl
+    );
+    assert(s7.protocol == SC_PROTO_X11);
+    assert(strcmp(s7.protocol_name, "x11") == 0);
+    assert(strcmp(s7.detection_source, "DISPLAY=:0") == 0);
+    assert(strcmp(s7.gdk_backend, "x11") == 0);
+    assert(s7.supports_window_enumeration == true);
+
+    /* 8. XWayland DISPLAY does not override Wayland when loginctl confirms session Type=wayland */
+    MockEnv wl_via_loginctl = {
+        .xdg_session_type = "unspecified",
+        .wayland_display = "",
+        .display = ":0",
+        .desktop = "GNOME",
+        .has_gdbus = true
+    };
+    ScDisplaySession s8 = sc_detect_display_session_custom(
+        mock_getenv, mock_has_bin, "wayland-0", ":0", "wayland", &wl_via_loginctl
+    );
+    assert(s8.protocol == SC_PROTO_WAYLAND);
+    assert(strcmp(s8.wayland_display, "wayland-0") == 0);
+    assert(strcmp(s8.detection_source, "loginctl session Type=wayland") == 0);
+
+    /* 9. Runtime GdkDisplay fallback from Wayland to GdkX11Display updates full X11 session metadata */
+    ScDisplaySession s9 = s1;
+    assert(s9.protocol == SC_PROTO_WAYLAND);
+    sc_reconcile_with_gdk_backend_name(&s9, "GdkX11Display");
+    assert(s9.protocol == SC_PROTO_X11);
+    assert(strcmp(s9.protocol_name, "x11") == 0);
+    assert(strcmp(s9.gdk_backend, "x11") == 0);
+    assert(strcmp(s9.detection_source, "GdkDisplay=GdkX11Display") == 0);
+    assert(strstr(s9.capture_driver, "X11") != NULL);
+    assert(s9.supports_window_enumeration == true);
+
+    /* 10. sc_bootstrap_display_env replaces empty string env vars instead of leaving them blank */
+    const char *orig_disp = getenv("DISPLAY");
+    char saved_disp[128] = "";
+    bool had_disp = (orig_disp != NULL);
+    if (orig_disp) {
+        snprintf(saved_disp, sizeof(saved_disp), "%s", orig_disp);
+    }
+    setenv("DISPLAY", "", 1);
+    sc_bootstrap_display_env(&s7);
+    assert(getenv("DISPLAY") != NULL && strcmp(getenv("DISPLAY"), ":0") == 0);
+    if (had_disp) {
+        setenv("DISPLAY", saved_disp, 1);
+    } else {
+        unsetenv("DISPLAY");
+    }
+}
+
+static void test_window_sizing_math(void) {
+    int w = 0, h = 0;
+
+    /* Empty launcher mode defaults to compact 460x200 */
+    sc_compute_window_size(0, 0, 1920, 1080, &w, &h);
+    assert(w == SC_LAUNCHER_WIDTH && w == 460);
+    assert(h == SC_LAUNCHER_HEIGHT && h == 200);
+
+    /* Small snip (200x120) clamps up to editor minimum 560x380 */
+    sc_compute_window_size(200, 120, 1920, 1080, &w, &h);
+    assert(w == SC_EDITOR_MIN_WIDTH && w == 560);
+    assert(h == SC_EDITOR_MIN_HEIGHT && h == 380);
+
+    /* Medium snip (700x450) adds chrome padding (700+48=748, 450+136=586) */
+    sc_compute_window_size(700, 450, 1920, 1080, &w, &h);
+    assert(w == 748 && h == 586);
+
+    /* Huge 4K snip (3840x2160) on 1920x1080 workarea clamps to 80% (1536x864) */
+    sc_compute_window_size(3840, 2160, 1920, 1080, &w, &h);
+    assert(w == 1536 && h == 864);
 }
 
 static void test_launcher_path_normalization(void) {
@@ -143,6 +231,7 @@ static void test_geometry_and_ruler_math(void) {
 
 int main(void) {
     test_display_detection_cascade();
+    test_window_sizing_math();
     test_launcher_path_normalization();
     test_geometry_and_ruler_math();
     printf("PASS: All native C SnipClip unit tests succeeded (v%s).\n", SNIPCLIP_VERSION);

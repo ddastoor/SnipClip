@@ -195,6 +195,59 @@ static void probe_loginctl_type(char *out_type, size_t out_size) {
     }
 }
 
+static void populate_protocol_drivers(
+    ScDisplaySession *s,
+    ScHasBinaryFn has_bin_fn,
+    void *user_data
+) {
+    if (s->protocol == SC_PROTO_WAYLAND) {
+        snprintf(s->gdk_backend, sizeof(s->gdk_backend), "wayland,x11");
+        if (has_bin_fn("dbus-daemon", user_data) || has_bin_fn("gdbus", user_data)) {
+            snprintf(
+                s->capture_driver,
+                sizeof(s->capture_driver),
+                "Native GDBus XDG Portal (org.freedesktop.portal.Screenshot)"
+            );
+        } else if (has_bin_fn("grim", user_data)) {
+            snprintf(s->capture_driver, sizeof(s->capture_driver), "grim (wlroots Wayland)");
+        } else if (has_bin_fn("spectacle", user_data)) {
+            snprintf(s->capture_driver, sizeof(s->capture_driver), "spectacle (KDE Wayland)");
+        } else if (has_bin_fn("gnome-screenshot", user_data)) {
+            snprintf(s->capture_driver, sizeof(s->capture_driver), "gnome-screenshot");
+        } else {
+            snprintf(s->capture_driver, sizeof(s->capture_driver), "Native GDBus Portal / GDK Fallback");
+        }
+
+        if (has_bin_fn("wl-copy", user_data)) {
+            snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard + wl-copy");
+        } else {
+            snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard (Wayland)");
+        }
+        s->supports_window_enumeration = false;
+    } else if (s->protocol == SC_PROTO_X11) {
+        snprintf(s->gdk_backend, sizeof(s->gdk_backend), "x11");
+        snprintf(
+            s->capture_driver,
+            sizeof(s->capture_driver),
+            "Native GDK/X11 Root Pixbuf + libX11 Window Tree"
+        );
+        if (has_bin_fn("xclip", user_data)) {
+            snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard + xclip");
+        } else if (has_bin_fn("xsel", user_data)) {
+            snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard + xsel");
+        } else {
+            snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard (X11)");
+        }
+        /* Native libX11 directly queries _NET_CLIENT_LIST_STACKING without needing external x11-utils */
+        s->supports_window_enumeration = true;
+    } else {
+        snprintf(s->gdk_backend, sizeof(s->gdk_backend), "broadway");
+        snprintf(s->capture_driver, sizeof(s->capture_driver), "offscreen-cairo-surface");
+        snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard");
+        s->supports_window_enumeration = false;
+    }
+}
+
 ScDisplaySession sc_detect_display_session_custom(
     ScGetenvFn getenv_fn,
     ScHasBinaryFn has_bin_fn,
@@ -209,6 +262,10 @@ ScDisplaySession sc_detect_display_session_custom(
     char session_type[32] = "";
     copy_trimmed(session_type, sizeof(session_type), getenv_fn("XDG_SESSION_TYPE", user_data));
     lowercase_inplace(session_type);
+
+    char lctl[32] = "";
+    copy_trimmed(lctl, sizeof(lctl), loginctl_type);
+    lowercase_inplace(lctl);
 
     copy_trimmed(s.wayland_display, sizeof(s.wayland_display), getenv_fn("WAYLAND_DISPLAY", user_data));
     copy_trimmed(s.x11_display, sizeof(s.x11_display), getenv_fn("DISPLAY", user_data));
@@ -250,6 +307,25 @@ ScDisplaySession sc_detect_display_session_custom(
         s.protocol = SC_PROTO_WAYLAND;
         snprintf(s.protocol_name, sizeof(s.protocol_name), "wayland");
         snprintf(s.detection_source, sizeof(s.detection_source), "WAYLAND_DISPLAY=%s", s.wayland_display);
+    } else if (s.x11_display[0] != '\0' && strcmp(lctl, "wayland") != 0) {
+        s.protocol = SC_PROTO_X11;
+        snprintf(s.protocol_name, sizeof(s.protocol_name), "x11");
+        snprintf(s.detection_source, sizeof(s.detection_source), "DISPLAY=%s", s.x11_display);
+    } else if (strcmp(lctl, "wayland") == 0 || strcmp(lctl, "x11") == 0) {
+        if (strcmp(lctl, "wayland") == 0) {
+            s.protocol = SC_PROTO_WAYLAND;
+            snprintf(s.protocol_name, sizeof(s.protocol_name), "wayland");
+            if (s.wayland_display[0] == '\0' && discovered_wayland_sock && *discovered_wayland_sock) {
+                snprintf(s.wayland_display, sizeof(s.wayland_display), "%s", discovered_wayland_sock);
+            }
+        } else {
+            s.protocol = SC_PROTO_X11;
+            snprintf(s.protocol_name, sizeof(s.protocol_name), "x11");
+            if (s.x11_display[0] == '\0' && discovered_x11_sock && *discovered_x11_sock) {
+                snprintf(s.x11_display, sizeof(s.x11_display), "%s", discovered_x11_sock);
+            }
+        }
+        snprintf(s.detection_source, sizeof(s.detection_source), "loginctl session Type=%s", lctl);
     } else if (discovered_wayland_sock && *discovered_wayland_sock) {
         s.protocol = SC_PROTO_WAYLAND;
         snprintf(s.protocol_name, sizeof(s.protocol_name), "wayland");
@@ -260,22 +336,6 @@ ScDisplaySession sc_detect_display_session_custom(
             "runtime socket %s",
             discovered_wayland_sock
         );
-    } else if (loginctl_type && (strcmp(loginctl_type, "wayland") == 0 || strcmp(loginctl_type, "x11") == 0)) {
-        if (strcmp(loginctl_type, "wayland") == 0) {
-            s.protocol = SC_PROTO_WAYLAND;
-            snprintf(s.protocol_name, sizeof(s.protocol_name), "wayland");
-        } else {
-            s.protocol = SC_PROTO_X11;
-            snprintf(s.protocol_name, sizeof(s.protocol_name), "x11");
-            if (s.x11_display[0] == '\0' && discovered_x11_sock && *discovered_x11_sock) {
-                snprintf(s.x11_display, sizeof(s.x11_display), "%s", discovered_x11_sock);
-            }
-        }
-        snprintf(s.detection_source, sizeof(s.detection_source), "loginctl session Type=%s", loginctl_type);
-    } else if (s.x11_display[0] != '\0') {
-        s.protocol = SC_PROTO_X11;
-        snprintf(s.protocol_name, sizeof(s.protocol_name), "x11");
-        snprintf(s.detection_source, sizeof(s.detection_source), "DISPLAY=%s", s.x11_display);
     } else if (discovered_x11_sock && *discovered_x11_sock) {
         s.protocol = SC_PROTO_X11;
         snprintf(s.protocol_name, sizeof(s.protocol_name), "x11");
@@ -283,53 +343,7 @@ ScDisplaySession sc_detect_display_session_custom(
         snprintf(s.detection_source, sizeof(s.detection_source), "/tmp/.X11-unix socket (%s)", discovered_x11_sock);
     }
 
-    if (s.protocol == SC_PROTO_WAYLAND) {
-        snprintf(s.gdk_backend, sizeof(s.gdk_backend), "wayland,x11");
-        if (has_bin_fn("dbus-daemon", user_data) || has_bin_fn("gdbus", user_data)) {
-            snprintf(
-                s.capture_driver,
-                sizeof(s.capture_driver),
-                "Native GDBus XDG Portal (org.freedesktop.portal.Screenshot)"
-            );
-        } else if (has_bin_fn("grim", user_data)) {
-            snprintf(s.capture_driver, sizeof(s.capture_driver), "grim (wlroots Wayland)");
-        } else if (has_bin_fn("spectacle", user_data)) {
-            snprintf(s.capture_driver, sizeof(s.capture_driver), "spectacle (KDE Wayland)");
-        } else if (has_bin_fn("gnome-screenshot", user_data)) {
-            snprintf(s.capture_driver, sizeof(s.capture_driver), "gnome-screenshot");
-        } else {
-            snprintf(s.capture_driver, sizeof(s.capture_driver), "Native GDBus Portal / GDK Fallback");
-        }
-
-        if (has_bin_fn("wl-copy", user_data)) {
-            snprintf(s.clipboard_driver, sizeof(s.clipboard_driver), "GtkClipboard + wl-copy");
-        } else {
-            snprintf(s.clipboard_driver, sizeof(s.clipboard_driver), "GtkClipboard (Wayland)");
-        }
-        s.supports_window_enumeration = false;
-    } else if (s.protocol == SC_PROTO_X11) {
-        snprintf(s.gdk_backend, sizeof(s.gdk_backend), "x11");
-        snprintf(
-            s.capture_driver,
-            sizeof(s.capture_driver),
-            "Native GDK/X11 Root Pixbuf + libX11 Window Tree"
-        );
-        if (has_bin_fn("xclip", user_data)) {
-            snprintf(s.clipboard_driver, sizeof(s.clipboard_driver), "GtkClipboard + xclip");
-        } else if (has_bin_fn("xsel", user_data)) {
-            snprintf(s.clipboard_driver, sizeof(s.clipboard_driver), "GtkClipboard + xsel");
-        } else {
-            snprintf(s.clipboard_driver, sizeof(s.clipboard_driver), "GtkClipboard (X11)");
-        }
-        /* Native libX11 directly queries _NET_CLIENT_LIST_STACKING without needing external x11-utils */
-        s.supports_window_enumeration = true;
-    } else {
-        snprintf(s.gdk_backend, sizeof(s.gdk_backend), "broadway");
-        snprintf(s.capture_driver, sizeof(s.capture_driver), "offscreen-cairo-surface");
-        snprintf(s.clipboard_driver, sizeof(s.clipboard_driver), "GtkClipboard");
-        s.supports_window_enumeration = false;
-    }
-
+    populate_protocol_drivers(&s, has_bin_fn, user_data);
     return s;
 }
 
@@ -347,10 +361,17 @@ ScDisplaySession sc_detect_display_session(void) {
     char x11_sock[64] = "";
     discover_x11_socket(x11_sock, sizeof(x11_sock));
 
+    char sess_type[32] = "";
+    copy_trimmed(sess_type, sizeof(sess_type), getenv("XDG_SESSION_TYPE"));
+    lowercase_inplace(sess_type);
+
+    char wl_env[64] = "";
+    copy_trimmed(wl_env, sizeof(wl_env), getenv("WAYLAND_DISPLAY"));
+
     char loginctl_type[32] = "";
-    if ((!getenv("XDG_SESSION_TYPE") || !*getenv("XDG_SESSION_TYPE")) &&
-        (!getenv("WAYLAND_DISPLAY") || !*getenv("WAYLAND_DISPLAY")) &&
-        wl_sock[0] == '\0') {
+    if (strcmp(sess_type, "wayland") != 0 &&
+        strcmp(sess_type, "x11") != 0 &&
+        wl_env[0] == '\0') {
         probe_loginctl_type(loginctl_type, sizeof(loginctl_type));
     }
 
@@ -366,41 +387,47 @@ ScDisplaySession sc_detect_display_session(void) {
 
 void sc_bootstrap_display_env(const ScDisplaySession *session) {
     if (!session) return;
-    if (!getenv("GDK_BACKEND") && session->protocol != SC_PROTO_HEADLESS) {
-        setenv("GDK_BACKEND", session->gdk_backend, 0);
+    const char *gdk_env = getenv("GDK_BACKEND");
+    if ((!gdk_env || !*gdk_env) && session->protocol != SC_PROTO_HEADLESS && session->gdk_backend[0] != '\0') {
+        setenv("GDK_BACKEND", session->gdk_backend, 1);
     }
     if (session->protocol == SC_PROTO_WAYLAND) {
-        if (session->wayland_display[0] != '\0') {
-            setenv("WAYLAND_DISPLAY", session->wayland_display, 0);
+        const char *wl_env = getenv("WAYLAND_DISPLAY");
+        if ((!wl_env || !*wl_env) && session->wayland_display[0] != '\0') {
+            setenv("WAYLAND_DISPLAY", session->wayland_display, 1);
         }
-        if (!getenv("XDG_RUNTIME_DIR")) {
+        const char *rt_env = getenv("XDG_RUNTIME_DIR");
+        if (!rt_env || !*rt_env) {
             char uid_rt[128];
             snprintf(uid_rt, sizeof(uid_rt), "/run/user/%u", (unsigned int)getuid());
             struct stat st;
             if (stat(uid_rt, &st) == 0 && S_ISDIR(st.st_mode)) {
-                setenv("XDG_RUNTIME_DIR", uid_rt, 0);
+                setenv("XDG_RUNTIME_DIR", uid_rt, 1);
             }
         }
     } else if (session->protocol == SC_PROTO_X11) {
-        if (session->x11_display[0] != '\0') {
-            setenv("DISPLAY", session->x11_display, 0);
+        const char *x11_env = getenv("DISPLAY");
+        if ((!x11_env || !*x11_env) && session->x11_display[0] != '\0') {
+            setenv("DISPLAY", session->x11_display, 1);
         }
     }
 }
 
 void sc_reconcile_with_gdk_backend_name(ScDisplaySession *session, const char *gdk_type_name) {
     if (!session || !gdk_type_name || !*gdk_type_name) return;
-    if (session->protocol == SC_PROTO_HEADLESS) {
-        if (strstr(gdk_type_name, "Wayland") != NULL || strstr(gdk_type_name, "wayland") != NULL) {
-            session->protocol = SC_PROTO_WAYLAND;
-            snprintf(session->protocol_name, sizeof(session->protocol_name), "wayland");
-            snprintf(session->detection_source, sizeof(session->detection_source), "GdkDisplay=%s", gdk_type_name);
-        } else if (strstr(gdk_type_name, "X11") != NULL || strstr(gdk_type_name, "x11") != NULL) {
-            session->protocol = SC_PROTO_X11;
-            snprintf(session->protocol_name, sizeof(session->protocol_name), "x11");
-            snprintf(session->detection_source, sizeof(session->detection_source), "GdkDisplay=%s", gdk_type_name);
-            session->supports_window_enumeration = true;
-        }
+    bool is_wayland = (strstr(gdk_type_name, "Wayland") != NULL || strstr(gdk_type_name, "wayland") != NULL);
+    bool is_x11 = (strstr(gdk_type_name, "X11") != NULL || strstr(gdk_type_name, "x11") != NULL);
+
+    if (is_wayland && session->protocol != SC_PROTO_WAYLAND) {
+        session->protocol = SC_PROTO_WAYLAND;
+        snprintf(session->protocol_name, sizeof(session->protocol_name), "wayland");
+        snprintf(session->detection_source, sizeof(session->detection_source), "GdkDisplay=%s", gdk_type_name);
+        populate_protocol_drivers(session, os_has_binary_cb, NULL);
+    } else if (is_x11 && session->protocol != SC_PROTO_X11) {
+        session->protocol = SC_PROTO_X11;
+        snprintf(session->protocol_name, sizeof(session->protocol_name), "x11");
+        snprintf(session->detection_source, sizeof(session->detection_source), "GdkDisplay=%s", gdk_type_name);
+        populate_protocol_drivers(session, os_has_binary_cb, NULL);
     }
 }
 

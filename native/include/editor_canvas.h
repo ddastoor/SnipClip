@@ -16,6 +16,7 @@ void sc_editor_canvas_free(ScEditorCanvas *ed);
 GtkWidget *sc_editor_canvas_widget(ScEditorCanvas *ed);
 
 void sc_editor_set_pixbuf(ScEditorCanvas *ed, GdkPixbuf *pixbuf);
+void sc_editor_reset_to_empty(ScEditorCanvas *ed);
 bool sc_editor_has_image(const ScEditorCanvas *ed);
 void sc_editor_get_dimensions(const ScEditorCanvas *ed, int *out_w, int *out_h);
 
