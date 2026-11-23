@@ -31,7 +31,7 @@ export const SIMULATED_WINDOWS: SimulatedWindow[] = [
   },
   {
     id: 'win-notes',
-    title: 'Package Manifest — snipclip_2.0.0_amd64.deb',
+    title: 'Package Manifest — snipclip_2.1.0_amd64.deb',
     x: 468,
     y: 344,
     width: 608,
