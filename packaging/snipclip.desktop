@@ -1,24 +1,33 @@
 [Desktop Entry]
+Version=1.0
 Type=Application
 Name=SnipClip
 GenericName=Screenshot & Snipping Tool
+X-GNOME-FullName=SnipClip Screenshot & Snipping Tool
 Comment=Capture and annotate rectangular, window, fullscreen, and freeform snips on X11 and Wayland
-Exec=/usr/bin/snipclip
+Exec=snipclip %f
+TryExec=/usr/bin/snipclip
 Icon=snipclip
 Terminal=false
-Categories=Utility;Graphics;2DGraphics;
-Keywords=screenshot;snip;snipping;capture;crop;annotate;x11;wayland;
+Categories=Utility;Graphics;2DGraphics;RasterGraphics;GTK;
+Keywords=screenshot;snip;snipping;screen;capture;crop;annotate;printscreen;x11;wayland;
+MimeType=image/png;image/jpeg;image/webp;image/bmp;
 StartupNotify=true
+StartupWMClass=snipclip
+X-KDE-StartupNotify=true
 Actions=RectSnip;WindowSnip;FullSnip;
 
 [Desktop Action RectSnip]
 Name=New Rectangular Snip
-Exec=/usr/bin/snipclip --mode rectangle --capture-now
+Icon=snipclip
+Exec=snipclip --mode rectangle --capture-now
 
 [Desktop Action WindowSnip]
 Name=New Window Snip
-Exec=/usr/bin/snipclip --mode window --capture-now
+Icon=snipclip
+Exec=snipclip --mode window --capture-now
 
 [Desktop Action FullSnip]
 Name=New Fullscreen Snip
-Exec=/usr/bin/snipclip --mode fullscreen --capture-now
+Icon=snipclip
+Exec=snipclip --mode fullscreen --capture-now

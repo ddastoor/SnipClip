@@ -3,11 +3,10 @@ import { Download } from 'lucide-react';
 
 interface HeaderProps {
   version: string;
-  debFilename: string;
-  downloadPath: string;
+  onDownloadDeb: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ version, debFilename, downloadPath }) => {
+export const Header: React.FC<HeaderProps> = ({ version, onDownloadDeb }) => {
   return (
     <header className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200">
       <div className="max-w-[1280px] mx-auto flex items-center justify-between gap-8 px-6 py-3.5">
@@ -52,14 +51,14 @@ export const Header: React.FC<HeaderProps> = ({ version, debFilename, downloadPa
 
         {/* Zone 3: 1 Primary Action */}
         <div className="flex items-center shrink-0">
-          <a
-            href={downloadPath}
-            download={debFilename}
-            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+          <button
+            type="button"
+            onClick={onDownloadDeb}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
           >
             <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
             <span>Download v{version} .deb</span>
-          </a>
+          </button>
         </div>
       </div>
     </header>

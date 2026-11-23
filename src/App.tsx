@@ -13,6 +13,7 @@ import {
   LinuxBinarySet,
   LinuxEnvInput,
 } from './utils/snipEngine';
+import { downloadVerifiedDebPackage } from './utils/debDownload';
 
 export function App() {
   const [activePresetId, setActivePresetId] = useState<string>(SESSION_PRESETS[0].id);
@@ -39,13 +40,13 @@ export function App() {
     setBins(nextBins);
   };
 
+  const handleDownloadDeb = () => {
+    void downloadVerifiedDebPackage(releaseData);
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
-      <Header
-        version={releaseData.version}
-        debFilename={releaseData.debFilename}
-        downloadPath={releaseData.downloadPath}
-      />
+      <Header version={releaseData.version} onDownloadDeb={handleDownloadDeb} />
 
       <main className="flex-1">
         <SnipStudio
@@ -74,13 +75,13 @@ export function App() {
             distributions
           </div>
           <div className="flex items-center gap-4 font-mono tabular-nums">
-            <a
-              href={releaseData.downloadPath}
-              download={releaseData.debFilename}
-              className="text-slate-700 hover:text-slate-900 underline underline-offset-4"
+            <button
+              type="button"
+              onClick={handleDownloadDeb}
+              className="text-slate-700 hover:text-slate-900 underline underline-offset-4 cursor-pointer"
             >
               {releaseData.debFilename}
-            </a>
+            </button>
             <span aria-hidden="true">·</span>
             <span>Release {releaseData.releaseTag}</span>
           </div>

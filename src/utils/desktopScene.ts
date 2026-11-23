@@ -15,7 +15,7 @@ export const DESKTOP_HEIGHT = 620;
 export const SIMULATED_WINDOWS: SimulatedWindow[] = [
   {
     id: 'win-terminal',
-    title: 'dinshaw@debian-bookworm: ~/projects/snipclip',
+    title: 'Software Center (Discover) — SnipClip Installed',
     x: 44,
     y: 58,
     width: 590,
@@ -31,7 +31,7 @@ export const SIMULATED_WINDOWS: SimulatedWindow[] = [
   },
   {
     id: 'win-notes',
-    title: 'Package Manifest — snipclip_1.0.0_all.deb',
+    title: 'Package Manifest — snipclip_2.0.0_amd64.deb',
     x: 468,
     y: 344,
     width: 608,
@@ -190,17 +190,20 @@ export function renderSimulatedDebianDesktop(
   });
 
   // Window 3: Package Manifest
-  const winNotes = SIMULATED_WINDOWS[2];
+  const winNotes = {
+    ...SIMULATED_WINDOWS[2],
+    title: `Package Manifest — snipclip_${version}_amd64.deb`,
+  };
   drawWindowChrome(ctx, winNotes, false);
   ctx.fillStyle = '#0f172a';
   ctx.font = '600 13px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`Debian Binary Package: snipclip_${version}_all.deb`, winNotes.x + 18, winNotes.y + 62);
+  ctx.fillText(`Native ELF Binary Package: snipclip_${version}_amd64.deb`, winNotes.x + 18, winNotes.y + 62);
 
   const manifestLines = [
-    `Package: snipclip   Version: ${version}   Architecture: all`,
-    'Depends: python3 (>= 3.10), python3-pyqt6, xdg-utils',
-    'Recommends: wl-clipboard, xclip, grim, x11-utils, xdg-desktop-portal',
-    'Shortcuts: Ctrl+N (New Snip) · Ctrl+C (Copy) · Ctrl+S (Save PNG)',
+    `Package: snipclip   Version: ${version}   Architecture: amd64`,
+    'Depends: libc6 (>= 2.35), libgtk-3-0t64 | libgtk-3-0, libx11-6',
+    'Recommends: xdg-desktop-portal, wl-clipboard, xclip, grim',
+    'Binary: /usr/bin/snipclip (Compiled C11 + GTK 3 + Cairo ELF)',
     'Modes: Rectangle · Window · Fullscreen · Freeform + 0/3/5/10s Delay',
   ];
   ctx.font = '400 12px "JetBrains Mono", monospace';
@@ -209,27 +212,50 @@ export function renderSimulatedDebianDesktop(
     ctx.fillText(line, winNotes.x + 18, winNotes.y + 94 + idx * 27);
   });
 
-  // Window 1 (Foreground): Debian Terminal
-  const winTerm = SIMULATED_WINDOWS[0];
-  drawWindowChrome(ctx, winTerm, true);
-  const termLines = [
-    { text: `$ sudo apt install ./snipclip_${version}_all.deb`, color: '#38bdf8' },
-    { text: `Selecting previously unselected package snipclip (${version})...`, color: '#94a3b8' },
-    { text: `Setting up snipclip (${version}) ... done.`, color: '#4ade80' },
-    { text: '', color: '#94a3b8' },
-    { text: '$ snipclip --version', color: '#38bdf8' },
-    { text: `SnipClip ${version} (snipclip_${version}_all.deb, release v${version})`, color: '#f8fafc' },
-    { text: '', color: '#94a3b8' },
-    { text: '$ snipclip --detect-display', color: '#38bdf8' },
-    { text: `{ "protocol": "${protocol}", "desktop": "${desktopName}",`, color: '#e2e8f0' },
-    { text: `  "capture_driver": "${captureDriver.slice(0, 42)}" }`, color: '#e2e8f0' },
-    { text: '$ snipclip --mode rectangle --delay 0', color: '#facc15' },
+  // Window 1 (Foreground): Graphical Software Center / Discover Window
+  const winInstaller = {
+    ...SIMULATED_WINDOWS[0],
+    title: `Software Center (Discover) — snipclip_${version}_amd64.deb`,
+  };
+  drawWindowChrome(ctx, winInstaller, false);
+
+  // App header card inside GUI installer
+  ctx.fillStyle = '#eff6ff';
+  ctx.fillRect(winInstaller.x + 16, winInstaller.y + 50, winInstaller.width - 32, 74);
+  drawRoundedRect(ctx, winInstaller.x + 28, winInstaller.y + 63, 48, 48, 10);
+  ctx.fillStyle = '#0f172a';
+  ctx.fill();
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  ctx.fillStyle = '#0f172a';
+  ctx.font = '700 15px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText(`SnipClip v${version}`, winInstaller.x + 90, winInstaller.y + 82);
+  ctx.fillStyle = '#475569';
+  ctx.font = '500 12px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText('Installed via Double-Click · Zero CLI Required', winInstaller.x + 90, winInstaller.y + 104);
+
+  // Graphical "Launch" button inside Software Center
+  drawRoundedRect(ctx, winInstaller.x + winInstaller.width - 124, winInstaller.y + 70, 94, 34, 7);
+  ctx.fillStyle = '#2563eb';
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '600 12px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText('Launch App', winInstaller.x + winInstaller.width - 110, winInstaller.y + 91);
+
+  const guiDetails = [
+    `Status: Installed (${version}) — Ready in Utilities & Graphics Menus`,
+    `GUI Startup Auto-Detect: ${protocol.toUpperCase()} (${desktopName})`,
+    `Active Capture Pipeline: ${captureDriver.slice(0, 44)}`,
+    'Capture Modes: Rectangle · Window · Fullscreen · Freeform',
+    'Shortcuts: PrintScreen · Custom Keybind · 0s / 3s / 5s / 10s Delay',
   ];
 
   ctx.font = '500 12px "JetBrains Mono", monospace';
-  termLines.forEach((line, idx) => {
-    ctx.fillStyle = line.color;
-    ctx.fillText(line.text, winTerm.x + 18, winTerm.y + 62 + idx * 25);
+  guiDetails.forEach((line, idx) => {
+    ctx.fillStyle = idx === 0 ? '#15803d' : '#334155';
+    ctx.fillText(line, winInstaller.x + 20, winInstaller.y + 156 + idx * 34);
   });
 
   return canvas;

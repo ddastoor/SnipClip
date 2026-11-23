@@ -11,6 +11,7 @@ import {
   FolderOpen,
   Grid,
   Highlighter,
+  Keyboard,
   Minus,
   PenTool,
   Plus,
@@ -28,15 +29,24 @@ import {
   AnnotationOperation,
   AnnotationTool,
   computePolygonBounds,
+  DEFAULT_CUSTOM_SHORTCUT,
   DetectedSessionResult,
+  evaluateCaptureShortcut,
   fitRulerToCanvas,
+  formatShortcutBinding,
   hitTestAnnotation,
+  isEditableElement,
+  isPrintScreenKey,
   normalizeRect,
+  parseShortcutString,
   Point2D,
   RectBounds,
   RulerState,
+  SHORTCUT_PRESETS,
+  ShortcutBinding,
   SnipMode,
   snapPointToRuler,
+  validateRecordedShortcut,
 } from '../utils/snipEngine';
 import {
   DESKTOP_HEIGHT,
@@ -230,6 +240,26 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
   );
   const [copyFeedback, setCopyFeedback] = useState<boolean>(false);
 
+  // Keyboard shortcut configuration (PrintScreen + user-definable key combination)
+  const [printScreenEnabled, setPrintScreenEnabled] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('snipclip.printScreenEnabled') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [customShortcut, setCustomShortcut] = useState<ShortcutBinding>(() => {
+    try {
+      const saved = window.localStorage.getItem('snipclip.customShortcut');
+      return (saved && parseShortcutString(saved)) || DEFAULT_CUSTOM_SHORTCUT;
+    } catch {
+      return DEFAULT_CUSTOM_SHORTCUT;
+    }
+  });
+  const [isRecordingShortcut, setIsRecordingShortcut] = useState<boolean>(false);
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
+  const lastPrintScreenKeyDownAtRef = useRef<number>(0);
+
   // Capture overlay interaction state
   const [captureStart, setCaptureStart] = useState<Point2D | null>(null);
   const [captureCurrent, setCaptureCurrent] = useState<Point2D | null>(null);
@@ -349,9 +379,98 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     setStatusMessage('Redid edit.');
   }, [redoStack, baseCanvas, annotations]);
 
-  // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Escape)
+  const formattedCustomShortcut = useMemo(
+    () => formatShortcutBinding(customShortcut),
+    [customShortcut]
+  );
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('snipclip.printScreenEnabled', String(printScreenEnabled));
+    } catch {
+      // Ignore storage errors in restricted environments
+    }
+  }, [printScreenEnabled]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('snipclip.customShortcut', formattedCustomShortcut);
+    } catch {
+      // Ignore storage errors in restricted environments
+    }
+  }, [formattedCustomShortcut]);
+
+  const triggerSnipCapture = useCallback(
+    (triggerSource?: string) => {
+      setCaptureStart(null);
+      setCaptureCurrent(null);
+      setLassoPoints([]);
+      setHoveredWindow(SIMULATED_WINDOWS[0]);
+
+      const viaSuffix = triggerSource ? ` via ${triggerSource}` : '';
+
+      if (delaySeconds > 0) {
+        setCountdownLeft(delaySeconds);
+        setStatusMessage(`Timer started${viaSuffix} — capturing in ${delaySeconds} seconds…`);
+        return;
+      }
+
+      if (snipMode === SnipMode.Fullscreen) {
+        const full = cloneCanvas(simulatedDesktop);
+        setBaseCanvas(full);
+        setAnnotations([]);
+        setUndoStack([]);
+        setRedoStack([]);
+        setCropRect(null);
+        setZoom(0.75);
+        setStatusMessage(
+          `Captured Fullscreen snip${viaSuffix} (${full.width} × ${full.height} px).`
+        );
+        return;
+      }
+
+      setIsCapturing(true);
+      setStatusMessage(
+        `Snipping active${viaSuffix} (${snipMode} mode) — select an area on the Debian desktop.`
+      );
+    },
+    [delaySeconds, snipMode, simulatedDesktop]
+  );
+
+  // Keyboard shortcuts (PrintScreen, custom capture combination, recorder, Ctrl+Z, Ctrl+Y, Escape)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (isRecordingShortcut) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          setIsRecordingShortcut(false);
+          setShortcutError(null);
+          setStatusMessage('Shortcut recording cancelled.');
+          return;
+        }
+
+        const validation = validateRecordedShortcut(e);
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (validation.pendingModifierOnly) {
+          return;
+        }
+
+        if (!validation.valid || !validation.binding) {
+          setShortcutError(validation.error ?? 'Invalid shortcut combination.');
+          return;
+        }
+
+        const nextFormatted = formatShortcutBinding(validation.binding);
+        setCustomShortcut(validation.binding);
+        setIsRecordingShortcut(false);
+        setShortcutError(null);
+        setStatusMessage(`Saved custom capture shortcut: ${nextFormatted}.`);
+        return;
+      }
+
       if (e.key === 'Escape') {
         if (isCapturing) {
           setIsCapturing(false);
@@ -369,6 +488,30 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
         return;
       }
 
+      const editable = isEditableElement(e.target as HTMLElement | null);
+      const shortcutEval = evaluateCaptureShortcut(e, {
+        printScreenEnabled,
+        customShortcut,
+        isEditableTarget: editable,
+        isRecordingShortcut,
+        isCapturing,
+        isCountingDown: countdownLeft !== null,
+      });
+
+      if (shortcutEval.triggered && shortcutEval.matchedTrigger) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (shortcutEval.matchedTrigger === 'PrintScreen') {
+          lastPrintScreenKeyDownAtRef.current = Date.now();
+        }
+        triggerSnipCapture(shortcutEval.matchedTrigger);
+        return;
+      }
+
+      if (editable) {
+        return;
+      }
+
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         handleUndo();
@@ -380,9 +523,44 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
         handleRedo();
       }
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isCapturing, countdownLeft, tool, handleUndo, handleRedo]);
+
+    // Fallback for Linux/OS window managers that intercept PrintScreen keydown and only emit keyup
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (
+        !isRecordingShortcut &&
+        !isCapturing &&
+        countdownLeft === null &&
+        printScreenEnabled &&
+        isPrintScreenKey(e.key, e.code) &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        if (Date.now() - lastPrintScreenKeyDownAtRef.current > 500) {
+          e.preventDefault();
+          triggerSnipCapture('PrintScreen');
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('keyup', onKeyUp, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('keyup', onKeyUp, true);
+    };
+  }, [
+    isRecordingShortcut,
+    isCapturing,
+    countdownLeft,
+    tool,
+    printScreenEnabled,
+    customShortcut,
+    triggerSnipCapture,
+    handleUndo,
+    handleRedo,
+  ]);
 
   const buildFlattenedCanvas = useCallback((): HTMLCanvasElement | null => {
     if (!baseCanvas) return null;
@@ -584,31 +762,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
   ]);
 
   const startNewSnip = () => {
-    setCaptureStart(null);
-    setCaptureCurrent(null);
-    setLassoPoints([]);
-    setHoveredWindow(SIMULATED_WINDOWS[0]);
-
-    if (delaySeconds > 0) {
-      setCountdownLeft(delaySeconds);
-      setStatusMessage(`Timer started — capturing in ${delaySeconds} seconds…`);
-      return;
-    }
-
-    if (snipMode === SnipMode.Fullscreen) {
-      const full = cloneCanvas(simulatedDesktop);
-      setBaseCanvas(full);
-      setAnnotations([]);
-      setUndoStack([]);
-      setRedoStack([]);
-      setCropRect(null);
-      setZoom(0.75);
-      setStatusMessage(`Captured Fullscreen snip (${full.width} × ${full.height} px).`);
-      return;
-    }
-
-    setIsCapturing(true);
-    setStatusMessage(`Snipping active (${snipMode} mode) — select an area on the Debian desktop.`);
+    triggerSnipCapture();
   };
 
   const completeWindowCapture = (win: SimulatedWindow) => {
@@ -1040,6 +1194,11 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
                 type="button"
                 onClick={startNewSnip}
                 disabled={countdownLeft !== null}
+                title={`Start a new snip (${
+                  printScreenEnabled
+                    ? `PrintScreen or ${formattedCustomShortcut}`
+                    : formattedCustomShortcut
+                })`}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -1312,6 +1471,135 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
                 >
                   <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
                 </button>
+              )}
+            </div>
+          </div>
+
+          {/* Capture Keyboard Shortcuts Configuration Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-white border-b border-slate-200 text-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
+                <Keyboard className="w-3.5 h-3.5 text-slate-500 shrink-0" aria-hidden="true" />
+                <span>Capture Shortcuts:</span>
+              </div>
+
+              <label
+                htmlFor="printscreen-shortcut-toggle"
+                className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none whitespace-nowrap shrink-0"
+              >
+                <input
+                  id="printscreen-shortcut-toggle"
+                  type="checkbox"
+                  checked={printScreenEnabled}
+                  onChange={(e) => {
+                    const enabled = e.target.checked;
+                    setPrintScreenEnabled(enabled);
+                    setStatusMessage(
+                      enabled
+                        ? 'PrintScreen capture shortcut enabled.'
+                        : 'PrintScreen capture shortcut disabled.'
+                    );
+                  }}
+                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span className="font-mono">PrintScreen</span>
+              </label>
+
+              <span aria-hidden="true" className="text-slate-300">
+                ·
+              </span>
+
+              <label className="sr-only" htmlFor="custom-shortcut-select">
+                Custom Capture Shortcut
+              </label>
+              <select
+                id="custom-shortcut-select"
+                aria-label="Custom Capture Shortcut"
+                value={formattedCustomShortcut}
+                onChange={(e) => {
+                  const parsed = parseShortcutString(e.target.value);
+                  if (parsed) {
+                    setCustomShortcut(parsed);
+                    setIsRecordingShortcut(false);
+                    setShortcutError(null);
+                    setStatusMessage(
+                      `Selected capture shortcut: ${formatShortcutBinding(parsed)}.`
+                    );
+                  }
+                }}
+                className="px-2.5 py-1 text-xs font-mono font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                {!SHORTCUT_PRESETS.some(
+                  (preset) => formatShortcutBinding(preset.binding) === formattedCustomShortcut
+                ) && (
+                  <option value={formattedCustomShortcut}>
+                    {formattedCustomShortcut} (Custom)
+                  </option>
+                )}
+                {SHORTCUT_PRESETS.map((preset) => {
+                  const val = formatShortcutBinding(preset.binding);
+                  return (
+                    <option key={val} value={val}>
+                      {preset.label}
+                    </option>
+                  );
+                })}
+              </select>
+
+              <button
+                type="button"
+                aria-pressed={isRecordingShortcut}
+                onClick={() => {
+                  setShortcutError(null);
+                  setIsRecordingShortcut((prev) => {
+                    const next = !prev;
+                    setStatusMessage(
+                      next
+                        ? 'Press your desired key combination now (or Esc to cancel)…'
+                        : 'Shortcut recording cancelled.'
+                    );
+                    return next;
+                  });
+                }}
+                className={`px-2.5 py-1 font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  isRecordingShortcut
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                }`}
+              >
+                {isRecordingShortcut ? 'Press keys… (Esc)' : 'Record Shortcut'}
+              </button>
+
+              {formattedCustomShortcut !== formatShortcutBinding(DEFAULT_CUSTOM_SHORTCUT) &&
+                !isRecordingShortcut && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomShortcut(DEFAULT_CUSTOM_SHORTCUT);
+                      setShortcutError(null);
+                      setStatusMessage(
+                        `Reset custom shortcut to ${formatShortcutBinding(DEFAULT_CUSTOM_SHORTCUT)}.`
+                      );
+                    }}
+                    className="text-slate-500 hover:text-slate-900 underline underline-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Reset default
+                  </button>
+                )}
+            </div>
+
+            <div className="font-mono tabular-nums text-slate-500">
+              {shortcutError ? (
+                <span role="alert" className="font-sans text-red-600 font-medium">
+                  {shortcutError}
+                </span>
+              ) : (
+                <span>
+                  Active:{' '}
+                  {printScreenEnabled
+                    ? `PrintScreen · ${formattedCustomShortcut}`
+                    : formattedCustomShortcut}
+                </span>
               )}
             </div>
           </div>

@@ -1,24 +1,14 @@
 import React, { useState } from 'react';
 import { Check, Copy, Download } from 'lucide-react';
 import { resolveVersionReleaseMetadata } from '../utils/snipEngine';
-
-export interface ReleaseInfoData {
-  packageName: string;
-  version: string;
-  releaseTag: string;
-  architecture: string;
-  debFilename: string;
-  downloadPath: string;
-  sha256: string;
-  sizeBytes: number;
-  installedSizeKb: number;
-  builtAtIso: string;
-  depends: string;
-  recommends: string;
-}
+import {
+  DebReleasePayload,
+  downloadVerifiedDebPackage,
+  downloadVerifiedSha256Sums,
+} from '../utils/debDownload';
 
 interface DebReleaseSectionProps {
-  release: ReleaseInfoData;
+  release: DebReleasePayload;
 }
 
 type CodeTab = 'control' | 'workflow' | 'files';
@@ -45,49 +35,50 @@ export const DebReleaseSection: React.FC<DebReleaseSectionProps> = ({ release })
 
   const controlPreview = `Package: ${release.packageName}
 Version: ${simulatedSync.valid ? simulatedSync.version : release.version}
-Section: utils
+Section: graphics
 Priority: optional
 Architecture: ${release.architecture}
 Installed-Size: ${release.installedSizeKb}
 Depends: ${release.depends}
 Recommends: ${release.recommends}
-Maintainer: SnipClip Maintainers <maintainers@snipclip.local>
-Description: Windows Snipping Tool clone for Debian-based Linux (X11 & Wayland)
- SnipClip brings the Windows 11 Snipping Tool workflow to Debian, Ubuntu,
- Linux Mint, and derivatives with automatic X11/Wayland session detection.`;
+Maintainer: SnipClip Contributors <maintainers@snipclip.org>
+Homepage: https://github.com/snipclip/snipclip
+Description: Native GTK 3 Windows Snipping Tool clone for Debian Linux (X11 & Wayland)
+ SnipClip is a natively compiled C + GTK 3 + Cairo screenshot and annotation
+ application for Debian, Ubuntu, Linux Mint, Pop!_OS, KDE Plasma, GNOME, XFCE,
+ and derivatives with automatic X11/Wayland startup detection.`;
 
   const workflowPreview = `# .github/workflows/release-deb.yml
 on:
   push:
+    branches: [main, master]
     tags:
       - "v*.*.*"
 
 jobs:
   build-deb-release:
     runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm
     steps:
       - uses: actions/checkout@v4
-      - name: Build .deb synced to GitHub Release tag
+      - name: Compile native GTK 3 ELF & build xz-compressed .deb
         run: ./scripts/build-deb.sh "\${GITHUB_REF_NAME#v}"
       - name: Publish .deb to GitHub Releases page
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            public/releases/snipclip_\${GITHUB_REF_NAME#v}_all.deb
+            public/releases/snipclip_\${GITHUB_REF_NAME#v}_amd64.deb
             public/releases/SHA256SUMS`;
 
-  const debFileTree = `/usr/bin/snipclip
-/usr/lib/snipclip/snipclip/__init__.py
-/usr/lib/snipclip/snipclip/version.py          # __version__ == "${simulatedSync.valid ? simulatedSync.version : release.version}"
-/usr/lib/snipclip/snipclip/display_backend.py  # X11 & Wayland startup auto-detection
-/usr/lib/snipclip/snipclip/geometry.py         # Pure bounds, ruler snap & hit-test math
-/usr/lib/snipclip/snipclip/capture_overlay.py  # Rectangle, Window, Fullscreen, Freeform
-/usr/lib/snipclip/snipclip/canvas_editor.py    # Pen, Highlighter, Shapes, Ruler, Redact, Crop
-/usr/lib/snipclip/snipclip/main_window.py      # Windows 11 Snipping Tool PyQt6 UI
-/usr/lib/snipclip/snipclip/cli.py              # --version, --detect-display, --mode, --delay
-/usr/share/applications/snipclip.desktop
+  const debFileTree = `/usr/bin/snipclip                              # Stripped 64-bit ELF binary (C11 + GTK 3 + Cairo + libX11)
+/usr/share/applications/snipclip.desktop       # Freedesktop Utilities & Graphics launch menus
+/usr/share/metainfo/snipclip.metainfo.xml      # KDE Discover & GNOME Software AppStream
+/usr/share/menu/snipclip                       # Debian Menu system entry
+/usr/share/icons/hicolor/{16..256}x{16..256}/apps/snipclip.png
 /usr/share/icons/hicolor/scalable/apps/snipclip.svg
-/usr/share/doc/snipclip/changelog.Debian.gz
+/usr/share/pixmaps/snipclip.png
+/usr/share/doc/snipclip/changelog.Debian.gz    # Version ${simulatedSync.valid ? simulatedSync.version : release.version}
 /usr/share/doc/snipclip/copyright`;
 
   return (
@@ -99,31 +90,32 @@ jobs:
               Debian (.deb) Deliverable &amp; GitHub Release Synchronization
             </h2>
             <p className="mt-2 text-sm sm:text-base text-slate-600">
-              Built with <code className="font-mono text-xs text-slate-800">dpkg-deb</code> for
-              Debian 12+, Ubuntu 22.04+, Linux Mint, and Pop!_OS. Every GitHub Release tag
-              automatically injects its version into{' '}
-              <code className="font-mono text-xs text-slate-800">snipclip/version.py</code> and{' '}
-              <code className="font-mono text-xs text-slate-800">DEBIAN/control</code> before
-              packaging.
+              Built with <code className="font-mono text-xs text-slate-800">dpkg-deb -Zxz</code>,
+              AppStream MetaInfo, and multi-resolution Hicolor/Desktop menu entries so double-click
+              installation works cleanly in KDE Discover, GNOME Software, GDebi, and{' '}
+              <code className="font-mono text-xs text-slate-800">apt</code>, registering SnipClip in
+              all desktop launch menus.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <a
-              href={release.downloadPath}
-              download={release.debFilename}
-              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
+            <button
+              type="button"
+              onClick={() => {
+                void downloadVerifiedDebPackage(release);
+              }}
+              className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-slate-900 rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <Download className="w-4 h-4 shrink-0" aria-hidden="true" />
               <span>Download {release.debFilename}</span>
-            </a>
-            <a
-              href="/releases/SHA256SUMS"
-              download="SHA256SUMS"
-              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadVerifiedSha256Sums(release)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <span>SHA256SUMS</span>
-            </a>
+            </button>
           </div>
         </div>
 
@@ -180,49 +172,63 @@ jobs:
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 flex flex-col justify-between gap-6">
             <div>
               <h3 className="text-sm font-semibold text-slate-900 mb-3">
-                Install on Debian / Ubuntu
+                Graphical Install &amp; Launch (No Command Line Required)
               </h3>
-              <div className="space-y-3">
-                <div>
-                  <div className="text-xs text-slate-500 mb-1">
-                    1. Install package and resolve apt dependencies automatically:
-                  </div>
-                  <div className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-900 text-slate-100 rounded-lg font-mono text-xs">
-                    <span className="truncate">{installCmd}</span>
-                    <button
-                      type="button"
-                      aria-label="Copy apt install command"
-                      onClick={() => copyCommand('install', installCmd)}
-                      className="p-1 text-slate-300 hover:text-white shrink-0 cursor-pointer"
-                    >
-                      {copiedCmd === 'install' ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5" aria-hidden="true" />
-                      )}
-                    </button>
-                  </div>
-                </div>
+              <ol className="space-y-2.5 text-xs text-slate-700 mb-4">
+                <li className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                  <span className="font-semibold text-slate-900">1. Double-click in File Explorer:</span>{' '}
+                  Open <code className="font-mono text-slate-900">{release.debFilename}</code> from
+                  Dolphin, GNOME Files, or Nemo to launch <strong>KDE Discover</strong>,{' '}
+                  <strong>GNOME Software</strong>, or <strong>GDebi</strong>.
+                </li>
+                <li className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                  <span className="font-semibold text-slate-900">2. Click Install / Update:</span>{' '}
+                  Native GTK 3 &amp; X11 shared libraries (<code className="font-mono">libgtk-3-0t64 | libgtk-3-0</code>)
+                  and desktop icons are configured automatically across Debian, Ubuntu, Mint &amp; derivatives.
+                </li>
+                <li className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+                  <span className="font-semibold text-slate-900">
+                    3. Launch from Installer or App Menu:
+                  </span>{' '}
+                  Click <strong>Launch</strong> directly inside Discover / Software, or open{' '}
+                  <strong>SnipClip</strong> under <strong>Utilities</strong> or{' '}
+                  <strong>Graphics</strong>. Wayland or X11 is auto-detected on startup.
+                </li>
+              </ol>
 
-                <div>
-                  <div className="text-xs text-slate-500 mb-1">
-                    2. Verify CLI version matches the downloaded .deb release:
-                  </div>
-                  <div className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-900 text-slate-100 rounded-lg font-mono text-xs">
-                    <span className="truncate">{verifyCmd}</span>
-                    <button
-                      type="button"
-                      aria-label="Copy verification command"
-                      onClick={() => copyCommand('verify', verifyCmd)}
-                      className="p-1 text-slate-300 hover:text-white shrink-0 cursor-pointer"
-                    >
-                      {copiedCmd === 'verify' ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5" aria-hidden="true" />
-                      )}
-                    </button>
-                  </div>
+              <div className="space-y-2">
+                <div className="text-xs text-slate-500">
+                  Optional terminal alternative (<code className="font-mono">apt</code>):
+                </div>
+                <div className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-900 text-slate-100 rounded-lg font-mono text-xs">
+                  <span className="truncate">{installCmd}</span>
+                  <button
+                    type="button"
+                    aria-label="Copy apt install command"
+                    onClick={() => copyCommand('install', installCmd)}
+                    className="p-1 text-slate-300 hover:text-white shrink-0 cursor-pointer"
+                  >
+                    {copiedCmd === 'install' ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-2 px-3 py-2 bg-slate-900 text-slate-100 rounded-lg font-mono text-xs">
+                  <span className="truncate">{verifyCmd}</span>
+                  <button
+                    type="button"
+                    aria-label="Copy verification command"
+                    onClick={() => copyCommand('verify', verifyCmd)}
+                    className="p-1 text-slate-300 hover:text-white shrink-0 cursor-pointer"
+                  >
+                    {copiedCmd === 'verify' ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                    )}
+                  </button>
                 </div>
               </div>
             </div>

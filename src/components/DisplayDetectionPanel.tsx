@@ -144,12 +144,13 @@ export const DisplayDetectionPanel: React.FC<DisplayDetectionPanelProps> = ({
       <div className="max-w-[1280px] mx-auto px-6">
         <div className="max-w-2xl mb-8">
           <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 [text-wrap:balance]">
-            Runtime X11 &amp; Wayland Auto-Detection
+            Automatic GUI Startup X11 &amp; Wayland Detection
           </h2>
           <p className="mt-2 text-sm sm:text-base text-slate-600">
-            At startup, <code className="font-mono text-xs text-slate-800">snipclip</code> inspects
-            Linux session variables and installed helper packages to choose the right compositor
-            screenshot pipeline and persistent clipboard backend without manual configuration.
+            The moment you open <strong>SnipClip</strong> from KDE Discover, GNOME Software, or your
+            desktop Application Menu, it automatically inspects session variables, Wayland/X11
+            sockets, and <code className="font-mono text-xs text-slate-800">loginctl</code> to
+            configure native capture and clipboard drivers with zero command-line setup.
           </p>
         </div>
 
@@ -270,8 +271,8 @@ export const DisplayDetectionPanel: React.FC<DisplayDetectionPanelProps> = ({
                     { key: 'grim', label: 'grim' },
                     { key: 'wlCopy', label: 'wl-copy' },
                     { key: 'xclip', label: 'xclip' },
-                    { key: 'xprop', label: 'xprop' },
-                    { key: 'xwininfo', label: 'xwininfo' },
+                    { key: 'spectacle', label: 'spectacle' },
+                    { key: 'gnomeScreenshot', label: 'gnome-screenshot' },
                   ] as const
                 ).map(({ key, label }) => (
                   <label key={key} className="inline-flex items-center gap-2 cursor-pointer">
@@ -293,10 +294,10 @@ export const DisplayDetectionPanel: React.FC<DisplayDetectionPanelProps> = ({
             <div>
               <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-200">
                 <h3 className="text-sm font-semibold text-slate-900">
-                  Resolved SnipClip Backend Pipeline
+                  Resolved SnipClip GUI Startup Pipeline
                 </h3>
                 <span className="text-xs font-mono font-semibold text-blue-700">
-                  snipclip --detect-display
+                  Auto-detected on GUI launch
                 </span>
               </div>
 
@@ -320,9 +321,9 @@ export const DisplayDetectionPanel: React.FC<DisplayDetectionPanelProps> = ({
                   </dd>
                 </div>
                 <div className="py-2.5 flex items-baseline justify-between gap-4">
-                  <dt className="text-slate-500 font-medium shrink-0">Startup QT_QPA_PLATFORM</dt>
+                  <dt className="text-slate-500 font-medium shrink-0">Startup GDK_BACKEND</dt>
                   <dd className="font-mono text-slate-800 text-right">
-                    {detected.qtPlatformPlugin}
+                    {detected.gdkBackend}
                   </dd>
                 </div>
                 <div className="py-2.5 flex items-baseline justify-between gap-4">

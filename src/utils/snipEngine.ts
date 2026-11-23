@@ -75,7 +75,7 @@ export interface LinuxBinarySet {
 export interface DetectedSessionResult {
   protocol: DisplayProtocol;
   detectionSource: string;
-  qtPlatformPlugin: string;
+  gdkBackend: string;
   desktopEnvironment: string;
   waylandDisplay: string;
   x11Display: string;
@@ -121,9 +121,9 @@ export function detectLinuxDisplaySession(
   }
 
   if (protocol === DisplayProtocol.Wayland) {
-    let captureDriver = 'qt-screen-grab (XWayland fallback)';
+    let captureDriver = 'gdk_pixbuf_get_from_window (XWayland fallback)';
     if (bins.gdbus) {
-      captureDriver = 'xdg-desktop-portal (org.freedesktop.portal.Screenshot)';
+      captureDriver = 'xdg-desktop-portal (GDBus org.freedesktop.portal.Screenshot)';
     } else if (bins.grim) {
       captureDriver = 'grim (wlroots Wayland protocol)';
     } else if (bins.gnomeScreenshot) {
@@ -132,15 +132,15 @@ export function detectLinuxDisplaySession(
       captureDriver = 'spectacle (KDE)';
     }
 
-    const clipboardDriver = bins.wlCopy ? 'wl-copy + QClipboard' : 'QClipboard';
+    const clipboardDriver = bins.wlCopy ? 'wl-copy + GtkClipboard' : 'GtkClipboard';
     const windowSnipStrategy = bins.gdbus
-      ? 'XDG Desktop Portal interactive window picker'
+      ? 'XDG Desktop Portal interactive window picker (GDBus)'
       : 'Compositor screen region fallback';
 
     return {
       protocol,
       detectionSource,
-      qtPlatformPlugin: 'wayland;xcb',
+      gdkBackend: 'wayland,x11',
       desktopEnvironment,
       waylandDisplay,
       x11Display,
@@ -152,42 +152,37 @@ export function detectLinuxDisplaySession(
   }
 
   if (protocol === DisplayProtocol.X11) {
-    const captureDriver = 'Qt X11 Screen Grab (QScreen.grabWindow)';
-    let clipboardDriver = 'QClipboard';
+    const captureDriver = 'GTK3 / GdkPixbuf Root Grab (gdk_pixbuf_get_from_window)';
+    let clipboardDriver = 'GtkClipboard';
     if (bins.xclip) {
-      clipboardDriver = 'xclip + QClipboard';
+      clipboardDriver = 'xclip + GtkClipboard';
     } else if (bins.xsel) {
-      clipboardDriver = 'xsel + QClipboard';
+      clipboardDriver = 'xsel + GtkClipboard';
     }
-
-    const supportsX11WindowEnumeration = bins.xprop && bins.xwininfo;
-    const windowSnipStrategy = supportsX11WindowEnumeration
-      ? '_NET_CLIENT_LIST_STACKING + xwininfo live hover bounds'
-      : 'Primary screen bounds fallback (install x11-utils for window hover)';
 
     return {
       protocol,
       detectionSource,
-      qtPlatformPlugin: 'xcb',
+      gdkBackend: 'x11',
       desktopEnvironment,
       waylandDisplay,
       x11Display,
       captureDriver,
       clipboardDriver,
-      windowSnipStrategy,
-      supportsX11WindowEnumeration,
+      windowSnipStrategy: 'Native libX11 _NET_CLIENT_LIST_STACKING + XTranslateCoordinates',
+      supportsX11WindowEnumeration: true,
     };
   }
 
   return {
     protocol: DisplayProtocol.Headless,
     detectionSource,
-    qtPlatformPlugin: 'offscreen',
+    gdkBackend: 'broadway',
     desktopEnvironment,
     waylandDisplay,
     x11Display,
-    captureDriver: 'offscreen-buffer',
-    clipboardDriver: 'QClipboard',
+    captureDriver: 'cairo-image-surface (headless)',
+    clipboardDriver: 'GtkClipboard',
     windowSnipStrategy: 'Unavailable (no active X11 or Wayland display socket)',
     supportsX11WindowEnumeration: false,
   };
@@ -379,7 +374,7 @@ export function resolveVersionReleaseMetadata(rawTagOrVersion: string): ReleaseV
   }
 
   const releaseTag = `v${cleaned}`;
-  const debFilename = `snipclip_${cleaned}_all.deb`;
+  const debFilename = `snipclip_${cleaned}_amd64.deb`;
   return {
     valid: true,
     version: cleaned,
@@ -388,3 +383,300 @@ export function resolveVersionReleaseMetadata(rawTagOrVersion: string): ReleaseV
     cliBanner: `SnipClip ${cleaned} (${debFilename}, release ${releaseTag})`,
   };
 }
+
+export interface ShortcutBinding {
+  ctrlOrMeta: boolean;
+  alt: boolean;
+  shift: boolean;
+  key: string;
+}
+
+export interface KeyboardEventLike {
+  key: string;
+  code?: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  repeat?: boolean;
+}
+
+export interface ShortcutValidationResult {
+  valid: boolean;
+  binding: ShortcutBinding | null;
+  pendingModifierOnly?: boolean;
+  error?: string;
+}
+
+export interface CaptureShortcutCheckOptions {
+  printScreenEnabled: boolean;
+  customShortcut: ShortcutBinding | null;
+  isEditableTarget: boolean;
+  isRecordingShortcut: boolean;
+  isCapturing: boolean;
+  isCountingDown: boolean;
+}
+
+export interface CaptureShortcutCheckResult {
+  triggered: boolean;
+  matchedTrigger: string | null;
+}
+
+export const DEFAULT_CUSTOM_SHORTCUT: ShortcutBinding = {
+  ctrlOrMeta: true,
+  alt: false,
+  shift: true,
+  key: 'S',
+};
+
+export const SHORTCUT_PRESETS: ReadonlyArray<{ label: string; binding: ShortcutBinding }> = [
+  {
+    label: 'Ctrl+Shift+S (Windows Snipping)',
+    binding: { ctrlOrMeta: true, alt: false, shift: true, key: 'S' },
+  },
+  {
+    label: 'Alt+Shift+S (Linux / Desktop)',
+    binding: { ctrlOrMeta: false, alt: true, shift: true, key: 'S' },
+  },
+  {
+    label: 'Ctrl+Alt+P (Quick Capture)',
+    binding: { ctrlOrMeta: true, alt: true, shift: false, key: 'P' },
+  },
+  {
+    label: 'F9 (Single Function Key)',
+    binding: { ctrlOrMeta: false, alt: false, shift: false, key: 'F9' },
+  },
+];
+
+const MODIFIER_ONLY_KEYS = new Set([
+  'Control',
+  'Shift',
+  'Alt',
+  'Meta',
+  'OS',
+  'Super',
+  'Hyper',
+  'AltGraph',
+  'CapsLock',
+  'NumLock',
+  'ScrollLock',
+]);
+
+export function isModifierOnlyKey(key: string): boolean {
+  return MODIFIER_ONLY_KEYS.has(key);
+}
+
+export function isPrintScreenKey(key: string, code?: string): boolean {
+  return (
+    key === 'PrintScreen' ||
+    code === 'PrintScreen' ||
+    key === 'SysRq' ||
+    key.toLowerCase() === 'printscreen'
+  );
+}
+
+export function normalizeShortcutKey(key: string, code?: string): string {
+  if (isPrintScreenKey(key, code)) {
+    return 'PrintScreen';
+  }
+
+  if (code) {
+    const keyMatch = /^Key([A-Z])$/.exec(code);
+    if (keyMatch) {
+      return keyMatch[1];
+    }
+    const digitMatch = /^Digit([0-9])$/.exec(code);
+    if (digitMatch) {
+      return digitMatch[1];
+    }
+    if (code === 'Space') {
+      return 'Space';
+    }
+  }
+
+  if (key === ' ') {
+    return 'Space';
+  }
+
+  if (/^f([1-9]|1[0-2])$/i.test(key)) {
+    return key.toUpperCase();
+  }
+
+  if (key.length === 1) {
+    return key.toUpperCase();
+  }
+
+  return key;
+}
+
+export function formatShortcutBinding(binding: ShortcutBinding): string {
+  const parts: string[] = [];
+  if (binding.ctrlOrMeta) parts.push('Ctrl');
+  if (binding.alt) parts.push('Alt');
+  if (binding.shift) parts.push('Shift');
+  parts.push(binding.key);
+  return parts.join('+');
+}
+
+export function parseShortcutString(formatted: string): ShortcutBinding | null {
+  const trimmed = formatted.trim();
+  if (!trimmed) return null;
+  const rawTokens = trimmed
+    .split('+')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (rawTokens.length === 0) return null;
+
+  let ctrlOrMeta = false;
+  let alt = false;
+  let shift = false;
+  let mainKey = '';
+
+  for (const token of rawTokens) {
+    const lower = token.toLowerCase();
+    if (lower === 'ctrl' || lower === 'control' || lower === 'cmd' || lower === 'meta') {
+      ctrlOrMeta = true;
+    } else if (lower === 'alt' || lower === 'option') {
+      alt = true;
+    } else if (lower === 'shift') {
+      shift = true;
+    } else {
+      mainKey = normalizeShortcutKey(token);
+    }
+  }
+
+  if (!mainKey) return null;
+  return { ctrlOrMeta, alt, shift, key: mainKey };
+}
+
+export function isEditableElement(
+  target: { tagName?: string; isContentEditable?: boolean } | null | undefined
+): boolean {
+  if (!target) return false;
+  if (target.isContentEditable) return true;
+  const tag = (target.tagName || '').toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
+
+export function validateRecordedShortcut(event: KeyboardEventLike): ShortcutValidationResult {
+  if (isModifierOnlyKey(event.key)) {
+    return {
+      valid: false,
+      binding: null,
+      pendingModifierOnly: true,
+    };
+  }
+
+  const normalizedKey = normalizeShortcutKey(event.key, event.code);
+  if (!normalizedKey || normalizedKey === 'Unidentified' || normalizedKey === 'Dead') {
+    return {
+      valid: false,
+      binding: null,
+      error: 'Unrecognized key — try a letter, number, function key, or PrintScreen.',
+    };
+  }
+
+  if (normalizedKey === 'Tab' || normalizedKey === 'Enter') {
+    return {
+      valid: false,
+      binding: null,
+      error: `${normalizedKey} is reserved for keyboard navigation.`,
+    };
+  }
+
+  const ctrlOrMeta = Boolean(event.ctrlKey || event.metaKey);
+  const alt = Boolean(event.altKey);
+  const shift = Boolean(event.shiftKey);
+
+  // Prevent overriding built-in Undo / Redo editor shortcuts
+  if (
+    ctrlOrMeta &&
+    !alt &&
+    ((normalizedKey === 'Z' && !shift) ||
+      (normalizedKey === 'Z' && shift) ||
+      (normalizedKey === 'Y' && !shift))
+  ) {
+    return {
+      valid: false,
+      binding: null,
+      error: 'Ctrl+Z and Ctrl+Y are reserved for Undo and Redo.',
+    };
+  }
+
+  const isStandaloneAllowed =
+    normalizedKey === 'PrintScreen' || /^F([1-9]|1[0-2])$/.test(normalizedKey);
+
+  if (!isStandaloneAllowed && !ctrlOrMeta && !alt && !shift) {
+    return {
+      valid: false,
+      binding: null,
+      error: 'Combine regular keys with Ctrl, Alt, or Shift (or use F1–F12 / PrintScreen).',
+    };
+  }
+
+  return {
+    valid: true,
+    binding: {
+      ctrlOrMeta,
+      alt,
+      shift,
+      key: normalizedKey,
+    },
+  };
+}
+
+export function matchesShortcutBinding(
+  event: KeyboardEventLike,
+  binding: ShortcutBinding
+): boolean {
+  if (event.repeat) return false;
+  const normalizedKey = normalizeShortcutKey(event.key, event.code);
+  if (normalizedKey !== binding.key) return false;
+
+  const eventCtrl = Boolean(event.ctrlKey || event.metaKey);
+  const eventAlt = Boolean(event.altKey);
+  const eventShift = Boolean(event.shiftKey);
+
+  return (
+    eventCtrl === binding.ctrlOrMeta &&
+    eventAlt === binding.alt &&
+    eventShift === binding.shift
+  );
+}
+
+export function evaluateCaptureShortcut(
+  event: KeyboardEventLike,
+  options: CaptureShortcutCheckOptions
+): CaptureShortcutCheckResult {
+  if (
+    event.repeat ||
+    options.isRecordingShortcut ||
+    options.isCapturing ||
+    options.isCountingDown
+  ) {
+    return { triggered: false, matchedTrigger: null };
+  }
+
+  const normalizedKey = normalizeShortcutKey(event.key, event.code);
+  const noModifiers =
+    !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+
+  if (options.printScreenEnabled && normalizedKey === 'PrintScreen' && noModifiers) {
+    return { triggered: true, matchedTrigger: 'PrintScreen' };
+  }
+
+  // Never hijack typing inside text inputs, textareas, or selects with custom chords
+  if (options.isEditableTarget) {
+    return { triggered: false, matchedTrigger: null };
+  }
+
+  if (options.customShortcut && matchesShortcutBinding(event, options.customShortcut)) {
+    return {
+      triggered: true,
+      matchedTrigger: formatShortcutBinding(options.customShortcut),
+    };
+  }
+
+  return { triggered: false, matchedTrigger: null };
+}
+

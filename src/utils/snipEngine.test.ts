@@ -6,14 +6,23 @@ import crypto from 'node:crypto';
 import {
   AnnotationTool,
   computePolygonBounds,
+  DEFAULT_CUSTOM_SHORTCUT,
   detectLinuxDisplaySession,
   DisplayProtocol,
+  evaluateCaptureShortcut,
   fitRulerToCanvas,
+  formatShortcutBinding,
   hitTestAnnotation,
+  isEditableElement,
+  matchesShortcutBinding,
   normalizeRect,
+  normalizeShortcutKey,
+  parseShortcutString,
   resolveVersionReleaseMetadata,
   snapPointToRuler,
+  validateRecordedShortcut,
 } from './snipEngine';
+import { decodeBase64ToBytes, isValidDebianArchiveBytes } from './debDownload';
 
 const defaultBins = {
   gdbus: true,
@@ -39,13 +48,13 @@ test('detects Wayland session via XDG_SESSION_TYPE and selects portal + wl-copy'
   );
   assert.equal(res.protocol, DisplayProtocol.Wayland);
   assert.equal(res.detectionSource, 'XDG_SESSION_TYPE=wayland');
-  assert.equal(res.qtPlatformPlugin, 'wayland;xcb');
-  assert.equal(res.clipboardDriver, 'wl-copy + QClipboard');
+  assert.equal(res.gdkBackend, 'wayland,x11');
+  assert.equal(res.clipboardDriver, 'wl-copy + GtkClipboard');
   assert.match(res.captureDriver, /xdg-desktop-portal/);
   assert.equal(res.supportsX11WindowEnumeration, false);
 });
 
-test('detects X11 session and enables _NET_CLIENT_LIST window enumeration when x11-utils present', () => {
+test('detects X11 session and enables native libX11 _NET_CLIENT_LIST_STACKING window enumeration', () => {
   const res = detectLinuxDisplaySession(
     {
       XDG_SESSION_TYPE: 'x11',
@@ -57,8 +66,8 @@ test('detects X11 session and enables _NET_CLIENT_LIST window enumeration when x
   );
   assert.equal(res.protocol, DisplayProtocol.X11);
   assert.equal(res.detectionSource, 'XDG_SESSION_TYPE=x11');
-  assert.equal(res.qtPlatformPlugin, 'xcb');
-  assert.equal(res.clipboardDriver, 'xclip + QClipboard');
+  assert.equal(res.gdkBackend, 'x11');
+  assert.equal(res.clipboardDriver, 'xclip + GtkClipboard');
   assert.equal(res.supportsX11WindowEnumeration, true);
 });
 
@@ -92,7 +101,7 @@ test('falls back through Wayland screenshot drivers (gnome-screenshot, spectacle
     wlCopy: false,
   });
   assert.equal(kdeRes.captureDriver, 'spectacle (KDE)');
-  assert.equal(kdeRes.clipboardDriver, 'QClipboard');
+  assert.equal(kdeRes.clipboardDriver, 'GtkClipboard');
 
   const xwaylandRes = detectLinuxDisplaySession(env, {
     ...defaultBins,
@@ -101,10 +110,10 @@ test('falls back through Wayland screenshot drivers (gnome-screenshot, spectacle
     gnomeScreenshot: false,
     spectacle: false,
   });
-  assert.equal(xwaylandRes.captureDriver, 'qt-screen-grab (XWayland fallback)');
+  assert.equal(xwaylandRes.captureDriver, 'gdk_pixbuf_get_from_window (XWayland fallback)');
 });
 
-test('falls back through X11 clipboard drivers (xclip -> xsel -> QClipboard)', () => {
+test('falls back through X11 clipboard drivers (xclip -> xsel -> GtkClipboard)', () => {
   const env = {
     XDG_SESSION_TYPE: 'x11',
     WAYLAND_DISPLAY: '',
@@ -117,15 +126,15 @@ test('falls back through X11 clipboard drivers (xclip -> xsel -> QClipboard)', (
     xsel: true,
     xprop: false,
   });
-  assert.equal(xselRes.clipboardDriver, 'xsel + QClipboard');
-  assert.equal(xselRes.supportsX11WindowEnumeration, false);
+  assert.equal(xselRes.clipboardDriver, 'xsel + GtkClipboard');
+  assert.equal(xselRes.supportsX11WindowEnumeration, true);
 
-  const qtRes = detectLinuxDisplaySession(env, {
+  const gtkRes = detectLinuxDisplaySession(env, {
     ...defaultBins,
     xclip: false,
     xsel: false,
   });
-  assert.equal(qtRes.clipboardDriver, 'QClipboard');
+  assert.equal(gtkRes.clipboardDriver, 'GtkClipboard');
 });
 
 test('returns Headless protocol when neither Wayland nor X11 variables exist', () => {
@@ -139,7 +148,7 @@ test('returns Headless protocol when neither Wayland nor X11 variables exist', (
     defaultBins
   );
   assert.equal(res.protocol, DisplayProtocol.Headless);
-  assert.equal(res.qtPlatformPlugin, 'offscreen');
+  assert.equal(res.gdkBackend, 'broadway');
   assert.equal(res.desktopEnvironment, 'Generic Linux Desktop');
 });
 
@@ -256,35 +265,168 @@ test('hit-tests annotations accurately for stroke eraser across shapes and polyl
 });
 
 test('synchronizes GitHub release tag to .deb filename and CLI version string', () => {
-  const synced = resolveVersionReleaseMetadata('v1.4.2');
+  const synced = resolveVersionReleaseMetadata('v2.0.0');
   assert.equal(synced.valid, true);
-  assert.equal(synced.version, '1.4.2');
-  assert.equal(synced.releaseTag, 'v1.4.2');
-  assert.equal(synced.debFilename, 'snipclip_1.4.2_all.deb');
-  assert.match(synced.cliBanner, /SnipClip 1\.4\.2 \(snipclip_1\.4\.2_all\.deb, release v1\.4\.2\)/);
+  assert.equal(synced.version, '2.0.0');
+  assert.equal(synced.releaseTag, 'v2.0.0');
+  assert.equal(synced.debFilename, 'snipclip_2.0.0_amd64.deb');
+  assert.match(synced.cliBanner, /SnipClip 2\.0\.0 \(snipclip_2\.0\.0_amd64\.deb, release v2\.0\.0\)/);
 
-  const prerelease = resolveVersionReleaseMetadata('2.0.0-rc1');
+  const prerelease = resolveVersionReleaseMetadata('2.1.0-rc1');
   assert.equal(prerelease.valid, true);
-  assert.equal(prerelease.debFilename, 'snipclip_2.0.0-rc1_all.deb');
+  assert.equal(prerelease.debFilename, 'snipclip_2.1.0-rc1_amd64.deb');
 
   assert.equal(resolveVersionReleaseMetadata('').valid, false);
   assert.equal(resolveVersionReleaseMetadata('not-a-semver').valid, false);
 });
 
-test('cross-stack parity: VERSION, releaseInfo.json, Python version.py, and built .deb match', () => {
+test('normalizes PrintScreen, SysRq, function keys, and layout-independent Key/Digit codes', () => {
+  assert.equal(normalizeShortcutKey('PrintScreen'), 'PrintScreen');
+  assert.equal(normalizeShortcutKey('SysRq', 'PrintScreen'), 'PrintScreen');
+  assert.equal(normalizeShortcutKey('Unidentified', 'PrintScreen'), 'PrintScreen');
+  assert.equal(normalizeShortcutKey('ß', 'KeyS'), 'S');
+  assert.equal(normalizeShortcutKey('@', 'Digit2'), '2');
+  assert.equal(normalizeShortcutKey('f9'), 'F9');
+  assert.equal(normalizeShortcutKey(' ', 'Space'), 'Space');
+});
+
+test('formats, parses, and validates recorded custom keyboard shortcuts cleanly', () => {
+  // Modifier-only press stays pending while user continues holding chord
+  const modOnly = validateRecordedShortcut({ key: 'Control', ctrlKey: true });
+  assert.equal(modOnly.valid, false);
+  assert.equal(modOnly.pendingModifierOnly, true);
+
+  // Bare single character without modifier is rejected with helpful guidance
+  const bareChar = validateRecordedShortcut({ key: 's', code: 'KeyS' });
+  assert.equal(bareChar.valid, false);
+  assert.ok(bareChar.error && bareChar.error.includes('Ctrl, Alt, or Shift'));
+
+  // Reserved Undo/Redo combinations cannot be overwritten
+  const reservedUndo = validateRecordedShortcut({ key: 'z', code: 'KeyZ', ctrlKey: true });
+  assert.equal(reservedUndo.valid, false);
+  assert.match(reservedUndo.error ?? '', /reserved for Undo and Redo/);
+
+  // Valid custom combination (Alt+Shift+K)
+  const validChord = validateRecordedShortcut({
+    key: 'K',
+    code: 'KeyK',
+    altKey: true,
+    shiftKey: true,
+  });
+  assert.equal(validChord.valid, true);
+  assert.deepEqual(validChord.binding, {
+    ctrlOrMeta: false,
+    alt: true,
+    shift: true,
+    key: 'K',
+  });
+  const formatted = formatShortcutBinding(validChord.binding!);
+  assert.equal(formatted, 'Alt+Shift+K');
+  assert.deepEqual(parseShortcutString(formatted), validChord.binding);
+
+  // Standalone F-key and PrintScreen are allowed without modifiers
+  const fKey = validateRecordedShortcut({ key: 'F9', code: 'F9' });
+  assert.equal(fKey.valid, true);
+  assert.equal(formatShortcutBinding(fKey.binding!), 'F9');
+});
+
+test('evaluates PrintScreen and custom capture shortcuts while protecting inputs and active captures', () => {
+  const baseOptions = {
+    printScreenEnabled: true,
+    customShortcut: DEFAULT_CUSTOM_SHORTCUT, // Ctrl+Shift+S
+    isEditableTarget: false,
+    isRecordingShortcut: false,
+    isCapturing: false,
+    isCountingDown: false,
+  };
+
+  // 1. PrintScreen triggers capture immediately
+  const prtSc = evaluateCaptureShortcut(
+    { key: 'PrintScreen', code: 'PrintScreen' },
+    baseOptions
+  );
+  assert.deepEqual(prtSc, { triggered: true, matchedTrigger: 'PrintScreen' });
+
+  // 2. Disabled PrintScreen does not trigger
+  const prtScDisabled = evaluateCaptureShortcut(
+    { key: 'PrintScreen', code: 'PrintScreen' },
+    { ...baseOptions, printScreenEnabled: false }
+  );
+  assert.equal(prtScDisabled.triggered, false);
+
+  // 3. Custom shortcut (Ctrl+Shift+S) triggers capture
+  const customHit = evaluateCaptureShortcut(
+    { key: 'S', code: 'KeyS', ctrlKey: true, shiftKey: true },
+    baseOptions
+  );
+  assert.deepEqual(customHit, { triggered: true, matchedTrigger: 'Ctrl+Shift+S' });
+
+  // 4. Custom shortcut does NOT hijack typing inside <input>, <textarea>, or <select>
+  assert.equal(isEditableElement({ tagName: 'INPUT' }), true);
+  assert.equal(isEditableElement({ tagName: 'DIV' }), false);
+  const blockedInInput = evaluateCaptureShortcut(
+    { key: 'S', code: 'KeyS', ctrlKey: true, shiftKey: true },
+    { ...baseOptions, isEditableTarget: true }
+  );
+  assert.equal(blockedInInput.triggered, false);
+
+  // 5. Key auto-repeat, active capture overlay, countdown, and shortcut recording suppress re-triggers
+  assert.equal(
+    evaluateCaptureShortcut(
+      { key: 'PrintScreen', repeat: true },
+      baseOptions
+    ).triggered,
+    false
+  );
+  assert.equal(
+    evaluateCaptureShortcut(
+      { key: 'PrintScreen' },
+      { ...baseOptions, isCapturing: true }
+    ).triggered,
+    false
+  );
+  assert.equal(
+    evaluateCaptureShortcut(
+      { key: 'PrintScreen' },
+      { ...baseOptions, isRecordingShortcut: true }
+    ).triggered,
+    false
+  );
+  assert.equal(
+    matchesShortcutBinding(
+      { key: 's', code: 'KeyS', metaKey: true, shiftKey: true },
+      DEFAULT_CUSTOM_SHORTCUT
+    ),
+    true
+  );
+});
+
+test('cross-stack parity: VERSION, releaseInfo.json, C snipclip_version.h, ELF binary, and built .deb match', () => {
   const rootDir = path.resolve(import.meta.dirname, '../..');
   const rootVersion = fs.readFileSync(path.join(rootDir, 'VERSION'), 'utf-8').trim();
   const releaseJson = JSON.parse(
     fs.readFileSync(path.join(rootDir, 'src/data/releaseInfo.json'), 'utf-8')
   );
-  const pyVersionFile = fs.readFileSync(
-    path.join(rootDir, 'linux/snipclip/version.py'),
+  const cVersionHeader = fs.readFileSync(
+    path.join(rootDir, 'native/include/snipclip_version.h'),
     'utf-8'
   );
 
   assert.equal(releaseJson.version, rootVersion);
-  assert.equal(releaseJson.debFilename, `snipclip_${rootVersion}_all.deb`);
-  assert.match(pyVersionFile, new RegExp(`__version__ = "${rootVersion.replace(/\./g, '\\.')}"`));
+  assert.equal(releaseJson.debFilename, `snipclip_${rootVersion}_${releaseJson.architecture}.deb`);
+  assert.match(
+    cVersionHeader,
+    new RegExp(`#define SNIPCLIP_VERSION "${rootVersion.replace(/\./g, '\\.')}"`)
+  );
+
+  // Verify compiled native ELF-64 binary exists and starts with \x7fELF
+  const elfPath = path.join(rootDir, 'native/build/snipclip');
+  assert.equal(fs.existsSync(elfPath), true);
+  const elfBytes = fs.readFileSync(elfPath);
+  assert.equal(elfBytes[0], 0x7f);
+  assert.equal(elfBytes[1], 0x45); // 'E'
+  assert.equal(elfBytes[2], 0x4c); // 'L'
+  assert.equal(elfBytes[3], 0x46); // 'F'
 
   const debFilePath = path.join(rootDir, 'public/releases', releaseJson.debFilename);
   assert.equal(fs.existsSync(debFilePath), true);
@@ -292,4 +434,18 @@ test('cross-stack parity: VERSION, releaseInfo.json, Python version.py, and buil
   const sha256 = crypto.createHash('sha256').update(debBytes).digest('hex');
   assert.equal(sha256, releaseJson.sha256);
   assert.equal(debBytes.byteLength, releaseJson.sizeBytes);
+
+  // Verify embedded debBase64 binary payload matches exact dpkg-deb output and !<arch>\n header
+  assert.equal(typeof releaseJson.debBase64, 'string');
+  const embeddedBytes = decodeBase64ToBytes(releaseJson.debBase64);
+  assert.equal(embeddedBytes.byteLength, releaseJson.sizeBytes);
+  assert.equal(isValidDebianArchiveBytes(embeddedBytes), true);
+  const embeddedSha256 = crypto.createHash('sha256').update(embeddedBytes).digest('hex');
+  assert.equal(embeddedSha256, releaseJson.sha256);
+
+  // Verify HTML interstitial pages are rejected and can never masquerade as a .deb archive
+  const fakeHtml = new TextEncoder().encode(
+    '<!DOCTYPE html><html><head><title>Loading...</title></head><body>Auth proxy</body></html>'
+  );
+  assert.equal(isValidDebianArchiveBytes(fakeHtml), false);
 });

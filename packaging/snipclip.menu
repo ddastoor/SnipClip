@@ -1,0 +1,6 @@
+?package(snipclip):needs="X11" section="Applications/Graphics" \
+  title="SnipClip" \
+  longtitle="SnipClip Screenshot & Snipping Tool" \
+  description="Capture and annotate screenshots on X11 and Wayland" \
+  command="/usr/bin/snipclip" \
+  icon="/usr/share/pixmaps/snipclip.png"
