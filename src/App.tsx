@@ -83,7 +83,23 @@ export function App() {
               {releaseData.debFilename}
             </button>
             <span aria-hidden="true">·</span>
-            <span>Release {releaseData.releaseTag}</span>
+            <a
+              href="https://github.com/ddastoor/SnipClip/releases"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-slate-700 hover:text-slate-900 underline underline-offset-4"
+            >
+              Release {releaseData.releaseTag}
+            </a>
+            <span aria-hidden="true">·</span>
+            <a
+              href="https://github.com/ddastoor/SnipClip"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-slate-700 hover:text-slate-900 underline underline-offset-4"
+            >
+              github.com/ddastoor/SnipClip
+            </a>
           </div>
         </div>
       </footer>

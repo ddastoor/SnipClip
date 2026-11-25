@@ -93,6 +93,33 @@ function cloneCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
   return copy;
 }
 
+export const MIN_EDITOR_ZOOM = 0.25;
+export const MAX_EDITOR_ZOOM = 4;
+const ZOOM_STEP = 0.25;
+const RULER_WHEEL_STEP_DEG = 5;
+
+export type ExportFormat = 'png' | 'jpeg';
+
+function clampZoom(z: number): number {
+  return Math.min(MAX_EDITOR_ZOOM, Math.max(MIN_EDITOR_ZOOM, Number(z.toFixed(2))));
+}
+
+function normalizeRulerAngle(deg: number): number {
+  return ((Math.round(deg) % 180) + 180) % 180;
+}
+
+function isPointInsideRulerState(pt: Point2D, ruler: RulerState): boolean {
+  if (!ruler.visible) return false;
+  const rad = (ruler.angleDeg * Math.PI) / 180;
+  const dx = Math.cos(rad);
+  const dy = Math.sin(rad);
+  const relX = pt.x - ruler.x;
+  const relY = pt.y - ruler.y;
+  const along = relX * dx + relY * dy;
+  const perp = relX * -dy + relY * dx;
+  return Math.abs(along) <= ruler.length / 2 && Math.abs(perp) <= ruler.halfThickness - 2;
+}
+
 function drawAnnotationOnContext(
   ctx: CanvasRenderingContext2D,
   op: AnnotationOperation,
@@ -244,6 +271,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     `Startup auto-detected ${sessionInfo.protocol.toUpperCase()} (${sessionInfo.detectionSource}) — ready to snip or annotate.`
   );
   const [copyFeedback, setCopyFeedback] = useState<boolean>(false);
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('png');
 
   // Keyboard shortcut configuration (PrintScreen + user-definable key combination)
   const [printScreenEnabled, setPrintScreenEnabled] = useState<boolean>(() => {
@@ -344,6 +372,14 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     setIsSettingsOpen(false);
     setStatusMessage('Closed snip — ready in compact launcher mode.');
   }, []);
+
+  // A new snip, uploaded image, crop, or undo replaces the backing canvas: any in-progress crop
+  // selection refers to stale dimensions, so leave Crop mode and drop the selection.
+  useEffect(() => {
+    setTool((prev) => (prev === AnnotationTool.Crop ? AnnotationTool.Pen : prev));
+    setCropRect(null);
+    setCropDragStart(null);
+  }, [baseCanvas]);
 
   // Keep ruler centered and proportioned inside newly captured or cropped canvases
   useEffect(() => {
@@ -488,7 +524,9 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     const ctx = flat.getContext('2d');
     if (!ctx) return flat;
     for (const op of annotations) {
-      drawAnnotationOnContext(ctx, op, flat);
+      // Sample Pixelate blocks from the pristine baseCanvas (exactly like the live preview), not
+      // from the partially inked `flat` copy, so exported/cropped pixels match what is on screen.
+      drawAnnotationOnContext(ctx, op, baseCanvas);
     }
     return flat;
   }, [baseCanvas, annotations]);
@@ -508,27 +546,51 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
       copiedViaClipboardApi = false;
     }
 
-    setCopyFeedback(true);
-    window.setTimeout(() => setCopyFeedback(false), 2000);
+    if (copiedViaClipboardApi) {
+      setCopyFeedback(true);
+      window.setTimeout(() => setCopyFeedback(false), 2000);
+      setStatusMessage(
+        `Copied PNG (${flat.width} × ${flat.height} px) via ${sessionInfo.clipboardDriver}.`
+      );
+      return;
+    }
+    // Never show a false "Copied" checkmark: the browser refused or lacks image clipboard support.
+    setCopyFeedback(false);
     setStatusMessage(
-      copiedViaClipboardApi
-        ? `Copied PNG (${flat.width} × ${flat.height} px) via ${sessionInfo.clipboardDriver}.`
-        : `Prepared PNG buffer (${flat.width} × ${flat.height} px) for ${sessionInfo.clipboardDriver}.`
+      `Clipboard image copy is blocked in this browser context — use Save PNG/JPEG instead (native SnipClip uses ${sessionInfo.clipboardDriver}).`
     );
   }, [buildFlattenedCanvas, sessionInfo.clipboardDriver]);
 
-  const handleSavePng = useCallback(() => {
+  const handleSaveImage = useCallback(() => {
     const flat = buildFlattenedCanvas();
     if (!flat) return;
-    const url = flat.toDataURL('image/png');
+    const isJpeg = exportFormat === 'jpeg';
+    let source = flat;
+    if (isJpeg) {
+      // JPEG has no alpha channel: composite freeform/transparent regions onto white first.
+      const opaque = document.createElement('canvas');
+      opaque.width = flat.width;
+      opaque.height = flat.height;
+      const octx = opaque.getContext('2d');
+      if (octx) {
+        octx.fillStyle = '#ffffff';
+        octx.fillRect(0, 0, opaque.width, opaque.height);
+        octx.drawImage(flat, 0, 0);
+        source = opaque;
+      }
+    }
+    const mime = isJpeg ? 'image/jpeg' : 'image/png';
+    const ext = isJpeg ? 'jpg' : 'png';
+    const filename = `snipclip-${version}-${flat.width}x${flat.height}.${ext}`;
+    const url = isJpeg ? source.toDataURL(mime, 0.92) : source.toDataURL(mime);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `snipclip-${version}-${flat.width}x${flat.height}.png`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setStatusMessage(`Saved snipclip-${version}-${flat.width}x${flat.height}.png.`);
-  }, [buildFlattenedCanvas, version]);
+    setStatusMessage(`Saved ${filename}.`);
+  }, [buildFlattenedCanvas, version, exportFormat]);
 
   // Keyboard shortcuts (PrintScreen, custom capture combination, recorder, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+S, Escape)
   useEffect(() => {
@@ -637,7 +699,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
         e.key.toLowerCase() === 's'
       ) {
         e.preventDefault();
-        handleSavePng();
+        handleSaveImage();
       }
     };
 
@@ -680,7 +742,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     handleUndo,
     handleRedo,
     handleCopySnip,
-    handleSavePng,
+    handleSaveImage,
   ]);
 
   // Render the main annotation editor canvas whenever state changes
@@ -775,6 +837,38 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
 
     ctx.restore();
   }, [baseCanvas, annotations, activeOp, ruler, tool, cropRect, zoom]);
+
+  // Ctrl/Cmd + Wheel zooms the canvas (25%–400%); plain wheel over the ruler rotates it ±5°.
+  // Registered natively with { passive: false } because React's onWheel is passive and cannot
+  // preventDefault the page scroll / browser zoom.
+  useEffect(() => {
+    const canvas = editorCanvasRef.current;
+    if (!canvas || !baseCanvas || isCapturing) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0) return;
+      const direction = e.deltaY < 0 ? 1 : -1;
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        setZoom((z) => clampZoom(z + direction * ZOOM_STEP));
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const pt = {
+        x: ((e.clientX - rect.left) / rect.width) * baseCanvas.width,
+        y: ((e.clientY - rect.top) / rect.height) * baseCanvas.height,
+      };
+      if (isPointInsideRulerState(pt, ruler)) {
+        e.preventDefault();
+        setRuler((prev) => ({
+          ...prev,
+          angleDeg: normalizeRulerAngle(prev.angleDeg + direction * RULER_WHEEL_STEP_DEG),
+        }));
+      }
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [baseCanvas, isCapturing, ruler]);
 
   // Render the capture overlay canvas when snipping is active
   useEffect(() => {
@@ -1012,19 +1106,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
   };
 
   // Editor canvas pointer handlers
-  const isPointInsideRuler = (pt: Point2D): boolean => {
-    if (!ruler.visible) return false;
-    const rad = (ruler.angleDeg * Math.PI) / 180;
-    const dx = Math.cos(rad);
-    const dy = Math.sin(rad);
-    const nx = -dy;
-    const ny = dx;
-    const relX = pt.x - ruler.x;
-    const relY = pt.y - ruler.y;
-    const along = relX * dx + relY * dy;
-    const perp = relX * nx + relY * ny;
-    return Math.abs(along) <= ruler.length / 2 && Math.abs(perp) <= ruler.halfThickness - 2;
-  };
+  const isPointInsideRuler = (pt: Point2D): boolean => isPointInsideRulerState(pt, ruler);
 
   const getEditorCoords = (
     e: React.PointerEvent<HTMLCanvasElement>,
@@ -1799,6 +1881,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
 
                   <button
                     type="button"
+                    data-testid="copy-snip-button"
                     title="Copy PNG to clipboard (Ctrl+C)"
                     onClick={() => void handleCopySnip()}
                     className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
@@ -1811,14 +1894,43 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
                     <span>{copyFeedback ? 'Copied' : 'Copy'}</span>
                   </button>
 
+                  <div
+                    role="group"
+                    aria-label="Export format"
+                    className="inline-flex items-center p-0.5 bg-slate-100 rounded-md text-[11px] font-semibold"
+                  >
+                    {(
+                      [
+                        { id: 'png', label: 'PNG' },
+                        { id: 'jpeg', label: 'JPEG' },
+                      ] as const
+                    ).map((fmt) => (
+                      <button
+                        key={fmt.id}
+                        type="button"
+                        aria-label={`Export as ${fmt.label}`}
+                        aria-pressed={exportFormat === fmt.id}
+                        onClick={() => setExportFormat(fmt.id)}
+                        className={`px-1.5 py-1 rounded transition-colors cursor-pointer ${
+                          exportFormat === fmt.id
+                            ? 'bg-white text-blue-700 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {fmt.label}
+                      </button>
+                    ))}
+                  </div>
+
                   <button
                     type="button"
-                    title="Save PNG (Ctrl+S)"
-                    onClick={handleSavePng}
+                    data-testid="save-snip-button"
+                    title={`Save ${exportFormat === 'jpeg' ? 'JPEG' : 'PNG'} (Ctrl+S)`}
+                    onClick={handleSaveImage}
                     className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                    <span>Save PNG</span>
+                    <span>{exportFormat === 'jpeg' ? 'Save JPEG' : 'Save PNG'}</span>
                   </button>
 
                   <button
@@ -1937,19 +2049,25 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
                   <button
                     type="button"
                     aria-label="Zoom out"
-                    onClick={() => setZoom((z) => Math.max(0.25, Number((z - 0.25).toFixed(2))))}
-                    className="p-0.5 text-slate-600 hover:text-slate-900 rounded cursor-pointer"
+                    onClick={() => setZoom((z) => clampZoom(z - ZOOM_STEP))}
+                    disabled={zoom <= MIN_EDITOR_ZOOM}
+                    className="p-0.5 text-slate-600 hover:text-slate-900 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <ZoomOut className="w-3.5 h-3.5" aria-hidden="true" />
                   </button>
-                  <span className="text-slate-700 w-10 text-center">
+                  <span
+                    data-testid="editor-zoom-level"
+                    title="Ctrl + Wheel to zoom (25%–400%)"
+                    className="text-slate-700 w-10 text-center"
+                  >
                     {Math.round(zoom * 100)}%
                   </span>
                   <button
                     type="button"
                     aria-label="Zoom in"
-                    onClick={() => setZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
-                    className="p-0.5 text-slate-600 hover:text-slate-900 rounded cursor-pointer"
+                    onClick={() => setZoom((z) => clampZoom(z + ZOOM_STEP))}
+                    disabled={zoom >= MAX_EDITOR_ZOOM}
+                    className="p-0.5 text-slate-600 hover:text-slate-900 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <ZoomIn className="w-3.5 h-3.5" aria-hidden="true" />
                   </button>
@@ -2009,6 +2127,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
                     data-width={widthPx}
                     data-height={heightPx}
                     data-annotations={annotations.length}
+                    data-zoom={zoom}
                     onPointerDown={onEditorPointerDown}
                     onPointerMove={onEditorPointerMove}
                     onPointerUp={onEditorPointerUp}

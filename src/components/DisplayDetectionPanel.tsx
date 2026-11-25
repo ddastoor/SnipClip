@@ -30,8 +30,6 @@ export const SESSION_PRESETS: SessionPreset[] = [
       wlCopy: true,
       xclip: false,
       xsel: false,
-      xprop: false,
-      xwininfo: false,
     },
   },
   {
@@ -51,8 +49,6 @@ export const SESSION_PRESETS: SessionPreset[] = [
       wlCopy: true,
       xclip: false,
       xsel: false,
-      xprop: false,
-      xwininfo: false,
     },
   },
   {
@@ -72,8 +68,6 @@ export const SESSION_PRESETS: SessionPreset[] = [
       wlCopy: true,
       xclip: false,
       xsel: false,
-      xprop: false,
-      xwininfo: false,
     },
   },
   {
@@ -93,8 +87,6 @@ export const SESSION_PRESETS: SessionPreset[] = [
       wlCopy: false,
       xclip: true,
       xsel: true,
-      xprop: true,
-      xwininfo: true,
     },
   },
   {
@@ -114,8 +106,6 @@ export const SESSION_PRESETS: SessionPreset[] = [
       wlCopy: false,
       xclip: true,
       xsel: false,
-      xprop: true,
-      xwininfo: true,
     },
   },
 ];
@@ -170,6 +160,7 @@ export const DisplayDetectionPanel: React.FC<DisplayDetectionPanelProps> = ({
                 <button
                   key={preset.id}
                   type="button"
+                  aria-pressed={active}
                   onClick={() => onSelectPreset(preset)}
                   className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                     active

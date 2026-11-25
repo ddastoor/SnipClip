@@ -39,8 +39,6 @@ const defaultBins = {
   wlCopy: true,
   xclip: true,
   xsel: false,
-  xprop: true,
-  xwininfo: true,
 };
 
 test('detects Wayland session via XDG_SESSION_TYPE and selects portal + wl-copy', () => {
@@ -120,21 +118,20 @@ test('falls back through Wayland screenshot drivers (gnome-screenshot, spectacle
   assert.equal(xwaylandRes.captureDriver, 'gdk_pixbuf_get_from_window (XWayland fallback)');
 });
 
-test('falls back through X11 clipboard drivers (xclip -> xsel -> GtkClipboard)', () => {
+test('falls back through X11 clipboard drivers (xclip -> GtkClipboard, xsel ignored)', () => {
   const env = {
     XDG_SESSION_TYPE: 'x11',
     WAYLAND_DISPLAY: '',
     DISPLAY: ':0',
     XDG_CURRENT_DESKTOP: 'i3',
   };
-  const xselRes = detectLinuxDisplaySession(env, {
-    ...defaultBins,
-    xclip: false,
-    xsel: true,
-    xprop: false,
-  });
-  assert.equal(xselRes.clipboardDriver, 'xsel + GtkClipboard');
-  assert.equal(xselRes.supportsX11WindowEnumeration, true);
+  const xclipRes = detectLinuxDisplaySession(env, { ...defaultBins, xclip: true, xsel: true });
+  assert.equal(xclipRes.clipboardDriver, 'xclip + GtkClipboard');
+  assert.equal(xclipRes.supportsX11WindowEnumeration, true);
+
+  // xsel has no PNG image-target support in the native backend, so it never claims the clipboard
+  const xselOnlyRes = detectLinuxDisplaySession(env, { ...defaultBins, xclip: false, xsel: true });
+  assert.equal(xselOnlyRes.clipboardDriver, 'GtkClipboard');
 
   const gtkRes = detectLinuxDisplaySession(env, {
     ...defaultBins,
@@ -142,6 +139,69 @@ test('falls back through X11 clipboard drivers (xclip -> xsel -> GtkClipboard)',
     xsel: false,
   });
   assert.equal(gtkRes.clipboardDriver, 'GtkClipboard');
+});
+
+test('Wayland capture priority mirrors native backend (wlroots grim -> portal -> grim -> spectacle -> gnome-screenshot)', () => {
+  const waylandEnv = (desktop: string) => ({
+    XDG_SESSION_TYPE: 'wayland',
+    WAYLAND_DISPLAY: 'wayland-0',
+    DISPLAY: ':0',
+    XDG_CURRENT_DESKTOP: desktop,
+  });
+
+  // wlroots compositors (sway/Hyprland/river/Wayfire) prefer grim even when the portal exists
+  for (const desktop of ['sway', 'Hyprland', 'river', 'wayfire:wlroots']) {
+    const res = detectLinuxDisplaySession(waylandEnv(desktop), {
+      ...defaultBins,
+      gdbus: true,
+      grim: true,
+    });
+    assert.equal(res.captureDriver, 'grim (wlroots Screencopy)', desktop);
+  }
+
+  // wlroots without grim falls back to the portal
+  assert.equal(
+    detectLinuxDisplaySession(waylandEnv('sway'), { ...defaultBins, gdbus: true, grim: false })
+      .captureDriver,
+    'xdg-desktop-portal (GDBus Screenshot)'
+  );
+
+  // GNOME with gdbus (and even grim installed) selects the portal
+  assert.equal(
+    detectLinuxDisplaySession(waylandEnv('GNOME'), { ...defaultBins, gdbus: true, grim: true })
+      .captureDriver,
+    'xdg-desktop-portal (GDBus Screenshot)'
+  );
+
+  // Non-wlroots desktop without gdbus but with grim uses grim
+  assert.equal(
+    detectLinuxDisplaySession(waylandEnv('GNOME'), { ...defaultBins, gdbus: false, grim: true })
+      .captureDriver,
+    'grim (wlroots Screencopy)'
+  );
+
+  // spectacle beats gnome-screenshot when neither gdbus nor grim are available
+  assert.equal(
+    detectLinuxDisplaySession(waylandEnv('KDE'), {
+      ...defaultBins,
+      gdbus: false,
+      grim: false,
+      spectacle: true,
+      gnomeScreenshot: true,
+    }).captureDriver,
+    'spectacle (KDE)'
+  );
+
+  assert.equal(
+    detectLinuxDisplaySession(waylandEnv('GNOME'), {
+      ...defaultBins,
+      gdbus: false,
+      grim: false,
+      spectacle: false,
+      gnomeScreenshot: true,
+    }).captureDriver,
+    'gnome-screenshot'
+  );
 });
 
 test('returns Headless protocol when neither Wayland nor X11 variables exist', () => {
@@ -165,6 +225,16 @@ test('normalizes inverted drag coordinates and clamps to desktop bounds', () => 
 
   const clamped = normalizeRect({ x: 1000, y: 500 }, { x: 1400, y: 900 }, 1120, 640);
   assert.deepEqual(clamped, { x: 1000, y: 500, width: 120, height: 140 });
+
+  // Boundary rounding: Math.round(99.5) = 100 and Math.round(0.5) = 1 would overflow to 101
+  const edge = normalizeRect({ x: 99.5, y: 99.5 }, { x: 100, y: 100 }, 100, 100);
+  assert.ok(edge.x + edge.width <= 100, `x + width = ${edge.x + edge.width}`);
+  assert.ok(edge.y + edge.height <= 100, `y + height = ${edge.y + edge.height}`);
+  assert.deepEqual(edge, { x: 100, y: 100, width: 0, height: 0 });
+
+  const nearEdge = normalizeRect({ x: 10.5, y: 20.5 }, { x: 200, y: 200 }, 100, 100);
+  assert.ok(nearEdge.x + nearEdge.width <= 100);
+  assert.ok(nearEdge.y + nearEdge.height <= 100);
 });
 
 test('computes freeform lasso bounding box and rejects tiny degenerate paths', () => {

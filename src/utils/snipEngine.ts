@@ -68,8 +68,6 @@ export interface LinuxBinarySet {
   wlCopy: boolean;
   xclip: boolean;
   xsel: boolean;
-  xprop: boolean;
-  xwininfo: boolean;
 }
 
 export interface DetectedSessionResult {
@@ -169,15 +167,21 @@ export function detectLinuxDisplaySession(
   }
 
   if (protocol === DisplayProtocol.Wayland) {
+    // Mirrors native/src/capture_backend.c priority: wlroots compositors prefer grim
+    // (Screencopy) even when a portal is reachable; otherwise the portal wins, then CLI
+    // fallbacks (grim -> spectacle -> gnome-screenshot) and finally the XWayland grab.
+    const isWlroots = /sway|hyprland|river|wayfire/i.test(desktopEnvironment);
     let captureDriver = 'gdk_pixbuf_get_from_window (XWayland fallback)';
-    if (bins.gdbus) {
-      captureDriver = 'xdg-desktop-portal (GDBus org.freedesktop.portal.Screenshot)';
+    if (isWlroots && bins.grim) {
+      captureDriver = 'grim (wlroots Screencopy)';
+    } else if (bins.gdbus) {
+      captureDriver = 'xdg-desktop-portal (GDBus Screenshot)';
     } else if (bins.grim) {
-      captureDriver = 'grim (wlroots Wayland protocol)';
-    } else if (bins.gnomeScreenshot) {
-      captureDriver = 'gnome-screenshot';
+      captureDriver = 'grim (wlroots Screencopy)';
     } else if (bins.spectacle) {
       captureDriver = 'spectacle (KDE)';
+    } else if (bins.gnomeScreenshot) {
+      captureDriver = 'gnome-screenshot';
     }
 
     const clipboardDriver = bins.wlCopy ? 'wl-copy + GtkClipboard' : 'GtkClipboard';
@@ -201,12 +205,7 @@ export function detectLinuxDisplaySession(
 
   if (protocol === DisplayProtocol.X11) {
     const captureDriver = 'GTK3 / GdkPixbuf Root Grab (gdk_pixbuf_get_from_window)';
-    let clipboardDriver = 'GtkClipboard';
-    if (bins.xclip) {
-      clipboardDriver = 'xclip + GtkClipboard';
-    } else if (bins.xsel) {
-      clipboardDriver = 'xsel + GtkClipboard';
-    }
+    const clipboardDriver = bins.xclip ? 'xclip + GtkClipboard' : 'GtkClipboard';
 
     return {
       protocol,
@@ -242,16 +241,23 @@ export function normalizeRect(
   maxWidth: number,
   maxHeight: number
 ): RectBounds {
-  const x1 = Math.max(0, Math.min(maxWidth, Math.min(start.x, end.x)));
-  const y1 = Math.max(0, Math.min(maxHeight, Math.min(start.y, end.y)));
-  const x2 = Math.max(0, Math.min(maxWidth, Math.max(start.x, end.x)));
-  const y2 = Math.max(0, Math.min(maxHeight, Math.max(start.y, end.y)));
-  return {
-    x: Math.round(x1),
-    y: Math.round(y1),
-    width: Math.round(x2 - x1),
-    height: Math.round(y2 - y1),
-  };
+  const minX = Math.max(0, Math.min(maxWidth, Math.min(start.x, end.x)));
+  const minY = Math.max(0, Math.min(maxHeight, Math.min(start.y, end.y)));
+  const maxX = Math.max(0, Math.min(maxWidth, Math.max(start.x, end.x)));
+  const maxY = Math.max(0, Math.min(maxHeight, Math.max(start.y, end.y)));
+  const x = Math.round(minX);
+  const y = Math.round(minY);
+  let width = Math.round(maxX - minX);
+  let height = Math.round(maxY - minY);
+  // Mirror C sc_normalize_rect: independent rounding of origin and extent can push the
+  // far edge one pixel past the canvas (e.g. 99.5 -> 100 + 1), so clamp it back inside.
+  if (maxWidth > 0 && x + width > maxWidth) {
+    width = Math.max(0, maxWidth - x);
+  }
+  if (maxHeight > 0 && y + height > maxHeight) {
+    height = Math.max(0, maxHeight - y);
+  }
+  return { x, y, width, height };
 }
 
 export function computePolygonBounds(
