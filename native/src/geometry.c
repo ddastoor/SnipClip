@@ -39,7 +39,51 @@ ScRect sc_normalize_rect(double x1, double y1, double x2, double y2, int max_w, 
     int rw = (int)llround(max_x - min_x);
     int rh = (int)llround(max_y - min_y);
 
-    ScRect r = { rx, ry, rw < 0 ? 0 : rw, rh < 0 ? 0 : rh };
+    /* Independent rounding of origin and extent can overshoot the bounds by one pixel
+     * (e.g. min_x=99.5, max_x=100.0, max_w=100 -> rx=100, rw=1). Clamp the final
+     * integer rectangle so rx + rw <= max_w and ry + rh <= max_h always hold. */
+    if (max_w > 0) {
+        rx = clamp_int(rx, 0, max_w);
+        if (rx + rw > max_w) rw = max_w - rx;
+    }
+    if (max_h > 0) {
+        ry = clamp_int(ry, 0, max_h);
+        if (ry + rh > max_h) rh = max_h - ry;
+    }
+    if (rw < 0) rw = 0;
+    if (rh < 0) rh = 0;
+
+    ScRect r = { rx, ry, rw, rh };
+    return r;
+}
+
+ScRect sc_scale_rect_to_pixbuf(ScRect logical_rect, int logical_w, int logical_h, int pixbuf_w, int pixbuf_h) {
+    if (logical_w <= 0 || logical_h <= 0 || pixbuf_w <= 0 || pixbuf_h <= 0) {
+        return sc_normalize_rect(
+            logical_rect.x,
+            logical_rect.y,
+            (double)logical_rect.x + logical_rect.width,
+            (double)logical_rect.y + logical_rect.height,
+            pixbuf_w,
+            pixbuf_h
+        );
+    }
+
+    double sx = (double)pixbuf_w / (double)logical_w;
+    double sy = (double)pixbuf_h / (double)logical_h;
+
+    /* Expand outward (floor origin, ceil far edge) so no selected physical pixel is lost */
+    double x1 = floor((double)logical_rect.x * sx + 1e-9);
+    double y1 = floor((double)logical_rect.y * sy + 1e-9);
+    double x2 = ceil(((double)logical_rect.x + logical_rect.width) * sx - 1e-9);
+    double y2 = ceil(((double)logical_rect.y + logical_rect.height) * sy - 1e-9);
+
+    int ix1 = clamp_int((int)x1, 0, pixbuf_w);
+    int iy1 = clamp_int((int)y1, 0, pixbuf_h);
+    int ix2 = clamp_int((int)x2, 0, pixbuf_w);
+    int iy2 = clamp_int((int)y2, 0, pixbuf_h);
+
+    ScRect r = { ix1, iy1, ix2 > ix1 ? ix2 - ix1 : 0, iy2 > iy1 ? iy2 - iy1 : 0 };
     return r;
 }
 

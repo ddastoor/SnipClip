@@ -9,8 +9,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-#define SC_MAX_HISTORY 40
-
 typedef struct {
     ScToolKind kind;
     GdkRGBA color;
@@ -245,7 +243,13 @@ static void draw_pixelate_mosaic(cairo_t *cr, const GdkPixbuf *backing, ScRect r
             const guchar *p = pixels + sy * rowstride + sx * n_channels;
             int cw = (x + block > r.x + r.width) ? (r.x + r.width - x) : block;
             int ch = (y + block > r.y + r.height) ? (r.y + r.height - y) : block;
-            cairo_set_source_rgb(cr, p[0] / 255.0, p[1] / 255.0, p[2] / 255.0);
+            if (n_channels >= 4) {
+                /* ARGB freeform snips: leave fully transparent exterior blocks untouched */
+                if (p[3] == 0) continue;
+                cairo_set_source_rgba(cr, p[0] / 255.0, p[1] / 255.0, p[2] / 255.0, p[3] / 255.0);
+            } else {
+                cairo_set_source_rgb(cr, p[0] / 255.0, p[1] / 255.0, p[2] / 255.0);
+            }
             cairo_rectangle(cr, (double)x, (double)y, (double)cw, (double)ch);
             cairo_fill(cr);
         }
@@ -882,12 +886,18 @@ void sc_editor_apply_crop(ScEditorCanvas *ed) {
         return;
     }
 
-    editor_push_undo(ed);
     GdkPixbuf *sub = gdk_pixbuf_new_subpixbuf(flattened, r.x, r.y, r.width, r.height);
+    if (!sub) {
+        g_object_unref(flattened);
+        return;
+    }
     GdkPixbuf *cropped = gdk_pixbuf_copy(sub);
     g_object_unref(sub);
     g_object_unref(flattened);
+    if (!cropped) return;
 
+    /* Only record undo state once the crop is guaranteed to succeed */
+    editor_push_undo(ed);
     g_object_unref(ed->pixbuf);
     ed->pixbuf = cropped;
 

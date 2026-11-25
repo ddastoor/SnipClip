@@ -40,7 +40,7 @@ static const char *os_getenv_cb(const char *name, void *user_data) {
     return getenv(name);
 }
 
-static bool os_has_binary_cb(const char *bin_name, void *user_data) {
+bool sc_has_binary_in_path(const char *bin_name, void *user_data) {
     (void)user_data;
     if (!bin_name || !*bin_name) return false;
     const char *path_env = getenv("PATH");
@@ -63,6 +63,68 @@ static bool os_has_binary_cb(const char *bin_name, void *user_data) {
         }
     }
     return false;
+}
+
+static bool os_has_binary_cb(const char *bin_name, void *user_data) {
+    return sc_has_binary_in_path(bin_name, user_data);
+}
+
+bool sc_desktop_is_wlroots(const char *desktop_environment) {
+    if (!desktop_environment || !*desktop_environment) return false;
+    char lower[128];
+    copy_trimmed(lower, sizeof(lower), desktop_environment);
+    lowercase_inplace(lower);
+    static const char *const wlroots_desktops[] = { "sway", "hyprland", "river", "wayfire" };
+    for (size_t i = 0; i < sizeof(wlroots_desktops) / sizeof(wlroots_desktops[0]); ++i) {
+        if (strstr(lower, wlroots_desktops[i]) != NULL) return true;
+    }
+    return false;
+}
+
+static void plan_append(ScWaylandCaptureStep *out, size_t max_steps, size_t *n, ScWaylandCaptureStep step) {
+    for (size_t i = 0; i < *n; ++i) {
+        if (out[i] == step) return;
+    }
+    if (*n < max_steps) {
+        out[(*n)++] = step;
+    }
+}
+
+size_t sc_wayland_capture_plan(
+    const char *desktop_environment,
+    ScHasBinaryFn has_bin_fn,
+    void *user_data,
+    ScWaylandCaptureStep *out_steps,
+    size_t max_steps
+) {
+    if (!out_steps || max_steps == 0 || !has_bin_fn) return 0;
+    size_t n = 0;
+
+    bool has_grim = has_bin_fn("grim", user_data);
+    bool has_spectacle = has_bin_fn("spectacle", user_data);
+    bool has_gnome_shot = has_bin_fn("gnome-screenshot", user_data);
+    bool has_dbus = has_bin_fn("dbus-daemon", user_data) || has_bin_fn("gdbus", user_data);
+
+    /* 1. wlroots compositors (no GNOME/KDE portal screenshot backend by default) prefer grim */
+    if (has_grim && sc_desktop_is_wlroots(desktop_environment)) {
+        plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_GRIM);
+    }
+
+    if (has_dbus) {
+        /* 2. Session bus tooling present: XDG portal first, then CLI helpers */
+        plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_PORTAL);
+        if (has_grim) plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_GRIM);
+        if (has_spectacle) plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_SPECTACLE);
+        if (has_gnome_shot) plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_GNOME_SCREENSHOT);
+    } else {
+        /* 3. No dbus-daemon / gdbus: CLI helpers first, native GDBus portal attempt last */
+        if (has_grim) plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_GRIM);
+        if (has_spectacle) plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_SPECTACLE);
+        if (has_gnome_shot) plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_GNOME_SCREENSHOT);
+        plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_PORTAL);
+    }
+    plan_append(out_steps, max_steps, &n, SC_WL_CAPTURE_GDK_ROOT);
+    return n;
 }
 
 static bool discover_wayland_socket_in_dir(const char *dir_path, char *out_name, size_t out_size) {
@@ -202,20 +264,38 @@ static void populate_protocol_drivers(
 ) {
     if (s->protocol == SC_PROTO_WAYLAND) {
         snprintf(s->gdk_backend, sizeof(s->gdk_backend), "wayland,x11");
-        if (has_bin_fn("dbus-daemon", user_data) || has_bin_fn("gdbus", user_data)) {
-            snprintf(
-                s->capture_driver,
-                sizeof(s->capture_driver),
-                "Native GDBus XDG Portal (org.freedesktop.portal.Screenshot)"
-            );
-        } else if (has_bin_fn("grim", user_data)) {
-            snprintf(s->capture_driver, sizeof(s->capture_driver), "grim (wlroots Wayland)");
-        } else if (has_bin_fn("spectacle", user_data)) {
-            snprintf(s->capture_driver, sizeof(s->capture_driver), "spectacle (KDE Wayland)");
-        } else if (has_bin_fn("gnome-screenshot", user_data)) {
-            snprintf(s->capture_driver, sizeof(s->capture_driver), "gnome-screenshot");
-        } else {
-            snprintf(s->capture_driver, sizeof(s->capture_driver), "Native GDBus Portal / GDK Fallback");
+
+        /* Telemetry is derived from the exact same plan sc_capture_desktop_pixbuf() executes */
+        ScWaylandCaptureStep plan[SC_WL_CAPTURE_MAX_STEPS];
+        size_t n = sc_wayland_capture_plan(
+            s->desktop_environment, has_bin_fn, user_data, plan, SC_WL_CAPTURE_MAX_STEPS
+        );
+        bool has_dbus = has_bin_fn("dbus-daemon", user_data) || has_bin_fn("gdbus", user_data);
+        ScWaylandCaptureStep first = n > 0 ? plan[0] : SC_WL_CAPTURE_GDK_ROOT;
+        switch (first) {
+            case SC_WL_CAPTURE_GRIM:
+                snprintf(s->capture_driver, sizeof(s->capture_driver), "grim (wlroots Wayland)");
+                break;
+            case SC_WL_CAPTURE_SPECTACLE:
+                snprintf(s->capture_driver, sizeof(s->capture_driver), "spectacle (KDE Wayland)");
+                break;
+            case SC_WL_CAPTURE_GNOME_SCREENSHOT:
+                snprintf(s->capture_driver, sizeof(s->capture_driver), "gnome-screenshot");
+                break;
+            case SC_WL_CAPTURE_PORTAL:
+                if (has_dbus) {
+                    snprintf(
+                        s->capture_driver,
+                        sizeof(s->capture_driver),
+                        "Native GDBus XDG Portal (org.freedesktop.portal.Screenshot)"
+                    );
+                    break;
+                }
+                /* fall through */
+            case SC_WL_CAPTURE_GDK_ROOT:
+            default:
+                snprintf(s->capture_driver, sizeof(s->capture_driver), "Native GDBus Portal / GDK Fallback");
+                break;
         }
 
         if (has_bin_fn("wl-copy", user_data)) {
@@ -231,10 +311,9 @@ static void populate_protocol_drivers(
             sizeof(s->capture_driver),
             "Native GDK/X11 Root Pixbuf + libX11 Window Tree"
         );
+        /* Only xclip is spawned for PNG persistence (xsel truncates binary image/png on NUL bytes) */
         if (has_bin_fn("xclip", user_data)) {
             snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard + xclip");
-        } else if (has_bin_fn("xsel", user_data)) {
-            snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard + xsel");
         } else {
             snprintf(s->clipboard_driver, sizeof(s->clipboard_driver), "GtkClipboard (X11)");
         }
@@ -432,21 +511,42 @@ void sc_reconcile_with_gdk_backend_name(ScDisplaySession *session, const char *g
 }
 
 static void json_escape_copy(const char *src, char *dst, size_t dst_size) {
+    if (!dst || dst_size == 0) return;
+    static const char hex_digits[] = "0123456789abcdef";
     size_t j = 0;
-    for (size_t i = 0; src && src[i] != '\0' && j + 2 < dst_size; ++i) {
-        if (src[i] == '"' || src[i] == '\\') {
+    for (size_t i = 0; src && src[i] != '\0'; ++i) {
+        unsigned char c = (unsigned char)src[i];
+        if (c == '"' || c == '\\') {
+            if (j + 3 > dst_size) break;
             dst[j++] = '\\';
+            dst[j++] = (char)c;
+        } else if (c < 0x20) {
+            /* Control characters must be \u00XX escaped for valid JSON */
+            if (j + 7 > dst_size) break;
+            dst[j++] = '\\';
+            dst[j++] = 'u';
+            dst[j++] = '0';
+            dst[j++] = '0';
+            dst[j++] = hex_digits[(c >> 4) & 0x0f];
+            dst[j++] = hex_digits[c & 0x0f];
+        } else {
+            if (j + 2 > dst_size) break;
+            dst[j++] = (char)c;
         }
-        dst[j++] = src[i];
     }
     dst[j] = '\0';
 }
 
 int sc_format_display_session_json(const ScDisplaySession *session, char *buf, size_t buf_size) {
     if (!session || !buf || buf_size == 0) return 0;
-    char src_esc[256], desk_esc[128], cap_esc[192], clip_esc[128];
+    char proto_esc[100], src_esc[772], gdk_esc[196], desk_esc[388], wl_esc[388], x11_esc[388], cap_esc[580],
+        clip_esc[388];
+    json_escape_copy(session->protocol_name, proto_esc, sizeof(proto_esc));
     json_escape_copy(session->detection_source, src_esc, sizeof(src_esc));
+    json_escape_copy(session->gdk_backend, gdk_esc, sizeof(gdk_esc));
     json_escape_copy(session->desktop_environment, desk_esc, sizeof(desk_esc));
+    json_escape_copy(session->wayland_display, wl_esc, sizeof(wl_esc));
+    json_escape_copy(session->x11_display, x11_esc, sizeof(x11_esc));
     json_escape_copy(session->capture_driver, cap_esc, sizeof(cap_esc));
     json_escape_copy(session->clipboard_driver, clip_esc, sizeof(clip_esc));
 
@@ -464,12 +564,12 @@ int sc_format_display_session_json(const ScDisplaySession *session, char *buf, s
         "  \"clipboard_driver\": \"%s\",\n"
         "  \"supports_window_enumeration\": %s\n"
         "}\n",
-        session->protocol_name,
+        proto_esc,
         src_esc,
-        session->gdk_backend,
+        gdk_esc,
         desk_esc,
-        session->wayland_display,
-        session->x11_display,
+        wl_esc,
+        x11_esc,
         cap_esc,
         clip_esc,
         session->supports_window_enumeration ? "true" : "false"

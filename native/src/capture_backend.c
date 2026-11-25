@@ -5,8 +5,10 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <errno.h>
 #include <gio/gio.h>
 #include <glib/gstdio.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -220,35 +222,34 @@ static GdkPixbuf *capture_via_helper_argv(gchar **argv, const char *target_file)
     return gdk_pixbuf_new_from_file(target_file, NULL);
 }
 
-static GdkPixbuf *capture_wayland_fallbacks(void) {
+static GdkPixbuf *capture_with_cli_tool(ScWaylandCaptureStep step) {
+    const char *bin = NULL;
+    switch (step) {
+        case SC_WL_CAPTURE_GRIM: bin = "grim"; break;
+        case SC_WL_CAPTURE_SPECTACLE: bin = "spectacle"; break;
+        case SC_WL_CAPTURE_GNOME_SCREENSHOT: bin = "gnome-screenshot"; break;
+        default: return NULL;
+    }
+    if (!sc_has_binary_in_path(bin, NULL)) return NULL;
+
     gchar *tmp_path = NULL;
     GError *err = NULL;
     gint fd = g_file_open_tmp("snipclip_XXXXXX.png", &tmp_path, &err);
     if (fd < 0 || !tmp_path) {
         if (err) g_error_free(err);
+        g_free(tmp_path);
         return NULL;
     }
     close(fd);
 
     GdkPixbuf *pix = NULL;
-
-    gchar *grim = g_find_program_in_path("grim");
-    if (grim) {
-        g_free(grim);
+    if (step == SC_WL_CAPTURE_GRIM) {
         gchar *argv[] = { "grim", tmp_path, NULL };
         pix = capture_via_helper_argv(argv, tmp_path);
-    }
-
-    gchar *spec = !pix ? g_find_program_in_path("spectacle") : NULL;
-    if (spec) {
-        g_free(spec);
+    } else if (step == SC_WL_CAPTURE_SPECTACLE) {
         gchar *argv[] = { "spectacle", "-f", "-b", "-n", "-o", tmp_path, NULL };
         pix = capture_via_helper_argv(argv, tmp_path);
-    }
-
-    gchar *gshot = !pix ? g_find_program_in_path("gnome-screenshot") : NULL;
-    if (gshot) {
-        g_free(gshot);
+    } else {
         gchar *argv[] = { "gnome-screenshot", "-f", tmp_path, NULL };
         pix = capture_via_helper_argv(argv, tmp_path);
     }
@@ -265,11 +266,66 @@ static GdkPixbuf *capture_gdk_root_window(int *out_origin_x, int *out_origin_y) 
     GdkWindow *root = gdk_get_default_root_window();
     if (!root) return NULL;
 
-    int w = gdk_window_get_width(root);
-    int h = gdk_window_get_height(root);
+    int root_w = gdk_window_get_width(root);
+    int root_h = gdk_window_get_height(root);
+
+    /* Union of every connected monitor so multi-head desktops are captured in full */
+    int ux1 = 0, uy1 = 0, ux2 = 0, uy2 = 0;
+    bool have_union = false;
+    GdkDisplay *disp = gdk_window_get_display(root);
+    int n_mon = disp ? gdk_display_get_n_monitors(disp) : 0;
+    for (int i = 0; i < n_mon; ++i) {
+        GdkMonitor *mon = gdk_display_get_monitor(disp, i);
+        if (!mon) continue;
+        GdkRectangle g;
+        gdk_monitor_get_geometry(mon, &g);
+        if (g.width <= 0 || g.height <= 0) continue;
+        if (!have_union) {
+            ux1 = g.x;
+            uy1 = g.y;
+            ux2 = g.x + g.width;
+            uy2 = g.y + g.height;
+            have_union = true;
+        } else {
+            if (g.x < ux1) ux1 = g.x;
+            if (g.y < uy1) uy1 = g.y;
+            if (g.x + g.width > ux2) ux2 = g.x + g.width;
+            if (g.y + g.height > uy2) uy2 = g.y + g.height;
+        }
+    }
+
+    int x = 0, y = 0, w = root_w, h = root_h;
+    if (have_union) {
+        x = ux1;
+        y = uy1;
+        w = ux2 - ux1;
+        h = uy2 - uy1;
+        /* Never request pixels outside the root window (X11 root always starts at 0,0) */
+        if (root_w > 0 && root_h > 0) {
+            if (x < 0) { w += x; x = 0; }
+            if (y < 0) { h += y; y = 0; }
+            if (x + w > root_w) w = root_w - x;
+            if (y + h > root_h) h = root_h - y;
+            /* Prefer the full root extent when it fully covers the monitor union (X11 screen) */
+            if (x == 0 && y == 0 && w <= root_w && h <= root_h) {
+                w = root_w;
+                h = root_h;
+            }
+        }
+    }
     if (w <= 0 || h <= 0) return NULL;
 
-    return gdk_pixbuf_get_from_window(root, 0, 0, w, h);
+    GdkPixbuf *pix = gdk_pixbuf_get_from_window(root, x, y, w, h);
+    if (pix) {
+        if (out_origin_x) *out_origin_x = x;
+        if (out_origin_y) *out_origin_y = y;
+    }
+    return pix;
+}
+
+GdkPixbuf *sc_capture_wayland_window_interactive(void) {
+    /* Interactive XDG portal picker only: NEVER falls back to a silent full-desktop capture */
+    return capture_via_xdg_portal_gdbus(true);
 }
 
 GdkPixbuf *sc_capture_desktop_pixbuf(
@@ -287,12 +343,30 @@ GdkPixbuf *sc_capture_desktop_pixbuf(
             if (win_pix) return win_pix;
         }
 
-        /* Try fast compositor tools or XDG Desktop Portal for full desktop capture */
-        GdkPixbuf *wl_pix = capture_wayland_fallbacks();
-        if (wl_pix) return wl_pix;
-
-        wl_pix = capture_via_xdg_portal_gdbus(false);
-        if (wl_pix) return wl_pix;
+        /* Execute the exact ordered plan reported as capture_driver telemetry */
+        ScWaylandCaptureStep plan[SC_WL_CAPTURE_MAX_STEPS];
+        size_t n = sc_wayland_capture_plan(
+            session->desktop_environment, sc_has_binary_in_path, NULL, plan, SC_WL_CAPTURE_MAX_STEPS
+        );
+        for (size_t i = 0; i < n; ++i) {
+            GdkPixbuf *pix = NULL;
+            switch (plan[i]) {
+                case SC_WL_CAPTURE_PORTAL:
+                    pix = capture_via_xdg_portal_gdbus(false);
+                    break;
+                case SC_WL_CAPTURE_GRIM:
+                case SC_WL_CAPTURE_SPECTACLE:
+                case SC_WL_CAPTURE_GNOME_SCREENSHOT:
+                    pix = capture_with_cli_tool(plan[i]);
+                    break;
+                case SC_WL_CAPTURE_GDK_ROOT:
+                default:
+                    pix = capture_gdk_root_window(out_origin_x, out_origin_y);
+                    break;
+            }
+            if (pix) return pix;
+        }
+        return NULL;
     }
 
     return capture_gdk_root_window(out_origin_x, out_origin_y);
@@ -447,9 +521,13 @@ static bool pipe_png_to_daemon(gchar **argv, const gchar *png_buf, gsize png_len
         return false;
     }
 
+    /* A clipboard helper that exits early must not kill SnipClip with SIGPIPE */
+    signal(SIGPIPE, SIG_IGN);
+
     gsize total = 0;
     while (total < png_len) {
         ssize_t n = write(stdin_fd, png_buf + total, png_len - total);
+        if (n < 0 && errno == EINTR) continue;
         if (n <= 0) break;
         total += (gsize)n;
     }

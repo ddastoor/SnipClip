@@ -6,6 +6,9 @@
 
 #include "geometry.h"
 
+/* Maximum number of retained undo / redo snapshots (oldest evicted first) */
+#define SC_MAX_HISTORY 40
+
 typedef struct ScEditorCanvas ScEditorCanvas;
 
 typedef void (*ScEditorStateCb)(void *user_data);
