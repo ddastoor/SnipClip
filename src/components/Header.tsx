@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download } from 'lucide-react';
+import { Download, Github } from 'lucide-react';
 
 interface HeaderProps {
   version: string;
@@ -50,7 +50,17 @@ export const Header: React.FC<HeaderProps> = ({ version, onDownloadDeb }) => {
         </nav>
 
         {/* Zone 3: 1 Primary Action */}
-        <div className="flex items-center shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
+          <a
+            href="https://github.com/ddastoor/SnipClip/releases"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="SnipClip GitHub releases"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+          >
+            <Github className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            <span className="hidden sm:inline">GitHub</span>
+          </a>
           <button
             type="button"
             onClick={onDownloadDeb}

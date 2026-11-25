@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
-import { Check, Copy, Download } from 'lucide-react';
+import { Check, Copy, Download, ExternalLink } from 'lucide-react';
 import { resolveVersionReleaseMetadata } from '../utils/snipEngine';
 import {
   DebReleasePayload,
   downloadVerifiedDebPackage,
   downloadVerifiedSha256Sums,
 } from '../utils/debDownload';
+import releaseWorkflowRaw from '../../.github/workflows/release-deb.yml?raw';
+
+export const GITHUB_REPO_URL = 'https://github.com/ddastoor/SnipClip';
+export const GITHUB_RELEASES_URL = `${GITHUB_REPO_URL}/releases`;
 
 interface DebReleaseSectionProps {
   release: DebReleasePayload;
@@ -15,6 +19,7 @@ type CodeTab = 'control' | 'workflow' | 'files';
 
 export const DebReleaseSection: React.FC<DebReleaseSectionProps> = ({ release }) => {
   const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
+  const [copyFallback, setCopyFallback] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<CodeTab>('control');
   const [tagInput, setTagInput] = useState<string>(release.releaseTag);
 
@@ -22,10 +27,19 @@ export const DebReleaseSection: React.FC<DebReleaseSectionProps> = ({ release })
 
   const copyCommand = async (id: string, text: string) => {
     try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard API unavailable');
+      }
       await navigator.clipboard.writeText(text);
     } catch {
-      // Clipboard API may be restricted in sandboxed frames; visual confirmation still shown
+      // Clipboard API is restricted (sandboxed iframe, insecure origin, or denied permission):
+      // never flash a false "Copied" checkmark — tell the user to copy manually instead.
+      setCopiedCmd(null);
+      setCopyFallback('Clipboard access is blocked here — select the command text and copy it manually.');
+      window.setTimeout(() => setCopyFallback(null), 4000);
+      return;
     }
+    setCopyFallback(null);
     setCopiedCmd(id);
     window.setTimeout(() => setCopiedCmd(null), 1800);
   };
@@ -41,45 +55,32 @@ Architecture: ${release.architecture}
 Installed-Size: ${release.installedSizeKb}
 Depends: ${release.depends}
 Recommends: ${release.recommends}
-Maintainer: SnipClip Contributors <maintainers@snipclip.org>
-Homepage: https://github.com/snipclip/snipclip
+Maintainer: Darayus Dastoor <ddastoor@users.noreply.github.com>
+Homepage: https://github.com/ddastoor/SnipClip
 Description: Native GTK 3 Windows Snipping Tool clone for Debian Linux (X11 & Wayland)
  SnipClip is a natively compiled C + GTK 3 + Cairo screenshot and annotation
  application for Debian, Ubuntu, Linux Mint, Pop!_OS, KDE Plasma, GNOME, XFCE,
  and derivatives with automatic X11/Wayland startup detection.`;
 
-  const workflowPreview = `# .github/workflows/release-deb.yml
-on:
-  push:
-    branches: [main, master]
-    tags:
-      - "v*.*.*"
+  // Rendered verbatim from the real workflow file so the preview can never drift from CI.
+  const workflowPreview = `# .github/workflows/release-deb.yml\n${releaseWorkflowRaw}`;
 
-jobs:
-  build-deb-release:
-    runs-on: ubuntu-latest
-    container:
-      image: debian:bookworm
-    steps:
-      - uses: actions/checkout@v4
-      - name: Compile native GTK 3 ELF & build xz-compressed .deb
-        run: ./scripts/build-deb.sh "\${GITHUB_REF_NAME#v}"
-      - name: Publish .deb to GitHub Releases page
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            public/releases/snipclip_\${GITHUB_REF_NAME#v}_amd64.deb
-            public/releases/SHA256SUMS`;
-
-  const debFileTree = `/usr/bin/snipclip                              # Stripped 64-bit ELF binary (C11 + GTK 3 + Cairo + libX11)
-/usr/share/applications/snipclip.desktop       # Freedesktop Utilities & Graphics launch menus
-/usr/share/metainfo/snipclip.metainfo.xml      # KDE Discover & GNOME Software AppStream
-/usr/share/menu/snipclip                       # Debian Menu system entry
-/usr/share/icons/hicolor/{16..256}x{16..256}/apps/snipclip.png
+  const debFileTree = `/usr/bin/snipclip                                   # Stripped 64-bit ELF binary (C11 + GTK 3 + Cairo + libX11)
+/usr/share/applications/snipclip.desktop            # Freedesktop Utilities & Graphics launch menus
+/usr/share/doc/snipclip/changelog.Debian.gz         # Version ${simulatedSync.valid ? simulatedSync.version : release.version}
+/usr/share/doc/snipclip/copyright
+/usr/share/icons/hicolor/16x16/apps/snipclip.png
+/usr/share/icons/hicolor/24x24/apps/snipclip.png
+/usr/share/icons/hicolor/32x32/apps/snipclip.png
+/usr/share/icons/hicolor/48x48/apps/snipclip.png
+/usr/share/icons/hicolor/64x64/apps/snipclip.png
+/usr/share/icons/hicolor/128x128/apps/snipclip.png
+/usr/share/icons/hicolor/256x256/apps/snipclip.png
 /usr/share/icons/hicolor/scalable/apps/snipclip.svg
+/usr/share/menu/snipclip                            # Debian Menu system entry
+/usr/share/metainfo/snipclip.metainfo.xml           # KDE Discover & GNOME Software AppStream
 /usr/share/pixmaps/snipclip.png
-/usr/share/doc/snipclip/changelog.Debian.gz    # Version ${simulatedSync.valid ? simulatedSync.version : release.version}
-/usr/share/doc/snipclip/copyright`;
+/usr/share/snipclip/snipclip.png                    # Runtime window icon (16 files total)`;
 
   return (
     <section id="debian-package" className="py-12 border-t border-slate-200 bg-slate-50">
@@ -116,6 +117,16 @@ jobs:
             >
               <span>SHA256SUMS</span>
             </button>
+            <a
+              href={GITHUB_RELEASES_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="github-releases-link"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+            >
+              <ExternalLink className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>GitHub Releases</span>
+            </a>
           </div>
         </div>
 
@@ -230,6 +241,11 @@ jobs:
                     )}
                   </button>
                 </div>
+                {copyFallback && (
+                  <p role="status" data-testid="copy-fallback-status" className="text-xs text-amber-700">
+                    {copyFallback}
+                  </p>
+                )}
               </div>
             </div>
 
