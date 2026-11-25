@@ -9,9 +9,11 @@
 #include <string.h>
 
 #include "capture_backend.h"
+#include "config_store.h"
 #include "display_detect.h"
 #include "editor_canvas.h"
 #include "geometry.h"
+#include "global_hotkey.h"
 #include "overlay.h"
 #include "snipclip_version.h"
 
@@ -21,6 +23,7 @@ typedef struct {
     GtkWidget *mode_combo;
     GtkWidget *delay_combo;
     GtkWidget *editor_actions_box;
+    GtkWidget *open_btn;
     GtkWidget *menu_btn;
     GtkWidget *menu_popover;
     GtkWidget *shortcut_btn;
@@ -45,24 +48,36 @@ typedef struct {
     int delay_seconds;
     int countdown_remaining;
     guint countdown_timer_id;
+    guint grab_timer_id;
     bool capture_in_progress;
+    bool window_was_visible;
+    bool background_mode;
 
     guint custom_keyval;
     GdkModifierType custom_mods;
     char custom_shortcut_label[64];
+
+    /* Persisted preferences ($XDG_CONFIG_HOME/snipclip/config.ini). Holds the on-disk values;
+     * CLI overrides only affect snip_mode / delay_seconds / custom_* above for this run. */
+    ScConfig config;
+    char config_path[4096];
+    bool have_config_path;
+
+    ScGlobalHotkey *hotkey;
 } ScApp;
 
 static const char *APP_CSS =
     "window { background-color: #f8fafc; color: #0f172a; }"
-    ".sc-cmd-bar { background-color: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 4px 6px; }"
-    ".sc-cmd-bar combobox button, .sc-cmd-bar combobox button.combo { min-width: 0; min-height: 0; padding: 3px 5px; font-size: 12px; }"
+    ".sc-cmd-bar { background-color: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 3px 4px; }"
+    ".sc-cmd-bar combobox, .sc-cmd-bar combobox box { min-width: 0; min-height: 0; padding: 0; margin: 0; }"
+    ".sc-cmd-bar combobox button, .sc-cmd-bar combobox button.combo { min-width: 0; min-height: 0; padding: 2px 4px; margin: 0; font-size: 11px; }"
     ".sc-annot-bar { background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 4px 8px; }"
     ".sc-annot-bar viewport { background-image: none; background-color: transparent; border: none; }"
     ".sc-crop-bar { background-color: #eff6ff; border-bottom: 1px solid #bfdbfe; padding: 5px 10px; }"
     ".sc-status-bar { background-color: #ffffff; border-top: 1px solid #e2e8f0; padding: 4px 10px; font-size: 11.5px; color: #475569; }"
-    "button.sc-primary-btn { min-width: 0; min-height: 0; background-image: none; background-color: #0f172a; color: #ffffff; border: 1px solid #0f172a; border-radius: 6px; padding: 4px 8px; font-weight: 700; font-size: 12px; }"
+    "button.sc-primary-btn { min-width: 0; min-height: 0; background-image: none; background-color: #0f172a; color: #ffffff; border: 1px solid #0f172a; border-radius: 6px; padding: 3px 6px; margin: 0; font-weight: 700; font-size: 11.5px; }"
     "button.sc-primary-btn:hover { background-color: #1e293b; }"
-    "button.sc-tool-btn { min-width: 0; min-height: 0; background-image: none; background-color: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 6px; padding: 4px 6px; font-weight: 600; font-size: 12px; }"
+    "button.sc-tool-btn { min-width: 0; min-height: 0; background-image: none; background-color: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 6px; padding: 3px 5px; margin: 0; font-weight: 600; font-size: 11.5px; }"
     "button.sc-tool-btn:hover { background-color: #f1f5f9; }"
     "button.sc-tool-active { background-image: none; background-color: #dbeafe; color: #1d4ed8; border-color: #2563eb; }"
     "button.sc-menu-item { min-width: 0; min-height: 0; background-image: none; background-color: transparent; color: #0f172a; border: none; border-radius: 5px; padding: 6px 10px; font-weight: 500; font-size: 12px; }"
@@ -76,6 +91,30 @@ static const char *APP_CSS =
 static void app_set_status_message(ScApp *app, const char *msg) {
     if (!app || !app->status_msg_lbl) return;
     gtk_label_set_text(GTK_LABEL(app->status_msg_lbl), msg ? msg : "");
+}
+
+/* Modal error/warning dialog. The message is always passed through a "%s" format so file names
+ * and GError text can never be interpreted as printf directives. */
+static void app_show_message_dialog(ScApp *app, GtkMessageType type, const char *primary, const char *detail) {
+    GtkWidget *dlg = gtk_message_dialog_new(
+        app && app->window ? GTK_WINDOW(app->window) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        type,
+        GTK_BUTTONS_OK,
+        "%s",
+        primary ? primary : ""
+    );
+    if (detail && *detail) {
+        gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s", detail);
+    }
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
+static void app_save_config(ScApp *app) {
+    if (!app || !app->have_config_path) return;
+    /* Silent best-effort persistence: unwritable config dirs never interrupt snipping */
+    (void)sc_config_save(app->config_path, &app->config);
 }
 
 static void query_monitor_workarea(GtkWidget *win, int *out_w, int *out_h) {
@@ -185,6 +224,59 @@ static void on_editor_state_changed(void *user_data) {
     }
 }
 
+static const char *map_shortcut_key_token(const char *tok) {
+    if (strcmp(tok, "+") == 0 || g_ascii_strcasecmp(tok, "Plus") == 0) return "plus";
+    if (strcmp(tok, "-") == 0 || g_ascii_strcasecmp(tok, "Minus") == 0) return "minus";
+    if (strcmp(tok, "=") == 0 || g_ascii_strcasecmp(tok, "Equal") == 0) return "equal";
+    if (g_ascii_strcasecmp(tok, "PrintScreen") == 0 || g_ascii_strcasecmp(tok, "PrtSc") == 0 ||
+        g_ascii_strcasecmp(tok, "Print") == 0) {
+        return "Print";
+    }
+    if (g_ascii_strcasecmp(tok, "Esc") == 0) return "Escape";
+    if (g_ascii_strcasecmp(tok, "Space") == 0) return "space";
+    return tok;
+}
+
+static bool append_str_bounded(char *dst, size_t dst_sz, const char *src) {
+    if (!dst || !src || dst_sz == 0) return false;
+    size_t dlen = strlen(dst);
+    size_t slen = strlen(src);
+    if (dlen + slen >= dst_sz) return false;
+    memcpy(dst + dlen, src, slen + 1);
+    return true;
+}
+
+static bool append_modifier_token(char *gtk_spec, size_t sz, const char *tok) {
+    const char *mod = NULL;
+    if (g_ascii_strcasecmp(tok, "Ctrl") == 0 || g_ascii_strcasecmp(tok, "Control") == 0 ||
+        g_ascii_strcasecmp(tok, "Primary") == 0) {
+        mod = "<Control>";
+    } else if (g_ascii_strcasecmp(tok, "Shift") == 0) {
+        mod = "<Shift>";
+    } else if (g_ascii_strcasecmp(tok, "Alt") == 0) {
+        mod = "<Alt>";
+    } else if (g_ascii_strcasecmp(tok, "Super") == 0 || g_ascii_strcasecmp(tok, "Meta") == 0 ||
+               g_ascii_strcasecmp(tok, "Win") == 0) {
+        mod = "<Super>";
+    }
+    if (!mod) return false;
+    return append_str_bounded(gtk_spec, sz, mod);
+}
+
+/* Editor chords that must never be captured by the custom global capture shortcut */
+static bool is_reserved_editor_chord(guint keyval, GdkModifierType mods) {
+    guint kv = gdk_keyval_to_lower(keyval);
+    GdkModifierType m = mods & gtk_accelerator_get_default_mod_mask();
+    if (m == GDK_CONTROL_MASK) {
+        return kv == GDK_KEY_z || kv == GDK_KEY_y || kv == GDK_KEY_c || kv == GDK_KEY_s ||
+               kv == GDK_KEY_n || kv == GDK_KEY_o;
+    }
+    if (m == (GDK_CONTROL_MASK | GDK_SHIFT_MASK)) {
+        return kv == GDK_KEY_z;
+    }
+    return false;
+}
+
 static bool parse_shortcut_accelerator(
     const char *spec,
     guint *out_keyval,
@@ -194,28 +286,46 @@ static bool parse_shortcut_accelerator(
 ) {
     if (!spec || !*spec) return false;
 
-    /* Support both "Ctrl+Shift+S" human format and "<Control><Shift>s" GTK accelerator format */
+    /* Support both "Ctrl+Shift+S" human format and "<Control><Shift>s" GTK accelerator format.
+     * A literal plus key is written "Ctrl++" (trailing "++") or "Ctrl+Plus". */
     char gtk_spec[128] = "";
     if (strchr(spec, '<') != NULL) {
         snprintf(gtk_spec, sizeof(gtk_spec), "%s", spec);
     } else {
         char copy[128];
         snprintf(copy, sizeof(copy), "%s", spec);
-        char *saveptr = NULL;
-        for (char *tok = strtok_r(copy, "+", &saveptr); tok != NULL; tok = strtok_r(NULL, "+", &saveptr)) {
-            if (g_ascii_strcasecmp(tok, "Ctrl") == 0 || g_ascii_strcasecmp(tok, "Control") == 0) {
-                strncat(gtk_spec, "<Control>", sizeof(gtk_spec) - strlen(gtk_spec) - 1);
-            } else if (g_ascii_strcasecmp(tok, "Shift") == 0) {
-                strncat(gtk_spec, "<Shift>", sizeof(gtk_spec) - strlen(gtk_spec) - 1);
-            } else if (g_ascii_strcasecmp(tok, "Alt") == 0) {
-                strncat(gtk_spec, "<Alt>", sizeof(gtk_spec) - strlen(gtk_spec) - 1);
-            } else if (g_ascii_strcasecmp(tok, "Super") == 0 || g_ascii_strcasecmp(tok, "Meta") == 0) {
-                strncat(gtk_spec, "<Super>", sizeof(gtk_spec) - strlen(gtk_spec) - 1);
-            } else if (g_ascii_strcasecmp(tok, "PrintScreen") == 0) {
-                strncat(gtk_spec, "Print", sizeof(gtk_spec) - strlen(gtk_spec) - 1);
+        size_t len = strlen(copy);
+        const char *key_tok = NULL;
+
+        if (strcmp(copy, "+") == 0) {
+            key_tok = "+";
+            copy[0] = '\0';
+        } else if (len >= 2 && copy[len - 1] == '+' && copy[len - 2] == '+') {
+            key_tok = "+";
+            copy[len - 2] = '\0';
+        } else {
+            char *last_plus = strrchr(copy, '+');
+            if (last_plus) {
+                *last_plus = '\0';
+                key_tok = last_plus + 1;
             } else {
-                strncat(gtk_spec, tok, sizeof(gtk_spec) - strlen(gtk_spec) - 1);
+                key_tok = copy;
             }
+        }
+        if (!key_tok || !*key_tok) return false;
+
+        char key_buf[128];
+        snprintf(key_buf, sizeof(key_buf), "%s", key_tok);
+        if (key_tok != copy) {
+            char *saveptr = NULL;
+            for (char *tok = strtok_r(copy, "+", &saveptr); tok != NULL; tok = strtok_r(NULL, "+", &saveptr)) {
+                if (!append_modifier_token(gtk_spec, sizeof(gtk_spec), tok)) {
+                    return false;
+                }
+            }
+        }
+        if (!append_str_bounded(gtk_spec, sizeof(gtk_spec), map_shortcut_key_token(key_buf))) {
+            return false;
         }
     }
 
@@ -232,6 +342,19 @@ static bool parse_shortcut_accelerator(
     return true;
 }
 
+/* Custom shortcut match; for non-letter symbols (e.g. "+") Shift is implied by the layout */
+static bool shortcut_matches(guint want_kv, GdkModifierType want_mods, guint kv, GdkModifierType mods) {
+    if (want_kv == 0 || kv != want_kv) return false;
+    if (mods == want_mods) return true;
+    bool is_symbol = gdk_keyval_to_upper(kv) == gdk_keyval_to_lower(kv);
+    return is_symbol && (mods & ~GDK_SHIFT_MASK) == (want_mods & ~GDK_SHIFT_MASK);
+}
+
+static void app_present_window(ScApp *app) {
+    gtk_widget_show(app->window);
+    gtk_window_present(GTK_WINDOW(app->window));
+}
+
 static void on_snip_completed(GdkPixbuf *captured, ScSnipMode mode, void *user_data) {
     (void)mode;
     ScApp *app = (ScApp *)user_data;
@@ -244,8 +367,7 @@ static void on_snip_completed(GdkPixbuf *captured, ScSnipMode mode, void *user_d
     }
 
     app_sync_window_mode(app, true);
-    gtk_widget_show(app->window);
-    gtk_window_present(GTK_WINDOW(app->window));
+    app_present_window(app);
 }
 
 static void on_snip_cancelled(void *user_data) {
@@ -253,16 +375,56 @@ static void on_snip_cancelled(void *user_data) {
     app->capture_in_progress = false;
     app_set_status_message(app, "Snip cancelled.");
     app_sync_window_mode(app, !sc_editor_has_image(app->editor));
-    gtk_widget_show(app->window);
-    gtk_window_present(GTK_WINDOW(app->window));
+    /* Resident --background sessions stay hidden when a hotkey snip is cancelled */
+    if (!app->background_mode || app->window_was_visible) {
+        app_present_window(app);
+    }
+}
+
+static gboolean perform_wayland_window_recapture(gpointer user_data) {
+    ScApp *app = (ScApp *)user_data;
+    app->grab_timer_id = 0;
+
+    GdkPixbuf *win_pix = sc_capture_wayland_window_interactive();
+    if (win_pix) {
+        on_snip_completed(win_pix, SC_MODE_WINDOW, app);
+        g_object_unref(win_pix);
+        return G_SOURCE_REMOVE;
+    }
+
+    app->capture_in_progress = false;
+    app_sync_window_mode(app, !sc_editor_has_image(app->editor));
+    app_present_window(app);
+    app_set_status_message(app, "Window snip unavailable.");
+    app_show_message_dialog(
+        app,
+        GTK_MESSAGE_WARNING,
+        "Interactive window capture is unavailable.",
+        "The XDG Desktop Portal window picker was cancelled or is not provided by this Wayland "
+        "compositor. Use Rectangle or Freeform mode to select the window area instead."
+    );
+    return G_SOURCE_REMOVE;
+}
+
+/* Overlay "Window" button on Wayland (no enumerable windows): re-capture through the portal
+ * picker after the overlay has closed, instead of silently grabbing the whole desktop. */
+static void on_overlay_window_recapture(void *user_data) {
+    ScApp *app = (ScApp *)user_data;
+    if (app->grab_timer_id != 0) {
+        g_source_remove(app->grab_timer_id);
+    }
+    app->grab_timer_id = g_timeout_add(150, perform_wayland_window_recapture, app);
 }
 
 static gboolean perform_delayed_desktop_grab(gpointer user_data) {
     ScApp *app = (ScApp *)user_data;
+    app->grab_timer_id = 0;
     int ox = 0, oy = 0;
 
     if (app->session.protocol == SC_PROTO_WAYLAND && app->snip_mode == SC_MODE_WINDOW) {
-        GdkPixbuf *win_pix = sc_capture_desktop_pixbuf(&app->session, true, &ox, &oy);
+        /* Portal picker only; on failure fall back to the overlay (Rectangle) rather than
+         * returning an unrequested full-desktop image as a "window" snip. */
+        GdkPixbuf *win_pix = sc_capture_wayland_window_interactive();
         if (win_pix) {
             on_snip_completed(win_pix, SC_MODE_WINDOW, app);
             g_object_unref(win_pix);
@@ -274,24 +436,21 @@ static gboolean perform_delayed_desktop_grab(gpointer user_data) {
     if (!desktop) {
         app->capture_in_progress = false;
         app_sync_window_mode(app, !sc_editor_has_image(app->editor));
-        gtk_widget_show(app->window);
-        gtk_window_present(GTK_WINDOW(app->window));
-
-        GtkWidget *dlg = gtk_message_dialog_new(
-            GTK_WINDOW(app->window),
-            GTK_DIALOG_MODAL,
+        app_present_window(app);
+        app_show_message_dialog(
+            app,
             GTK_MESSAGE_WARNING,
-            GTK_BUTTONS_OK,
-            "Unable to capture desktop pixels.\n\nOn Wayland compositors, ensure xdg-desktop-portal (or grim / spectacle) is active."
+            "Unable to capture desktop pixels.",
+            "On Wayland compositors, ensure xdg-desktop-portal (or grim / spectacle) is active."
         );
-        gtk_dialog_run(GTK_DIALOG(dlg));
-        gtk_widget_destroy(dlg);
         return G_SOURCE_REMOVE;
     }
 
+    /* Always enumerate on X11 so switching to Window mode inside the overlay can highlight and
+     * crop individual windows even when the snip started in Rectangle / Freeform mode. */
     ScWindowInfo wins[SC_MAX_WINDOWS];
     size_t win_count = 0;
-    if (app->session.protocol == SC_PROTO_X11 && app->snip_mode == SC_MODE_WINDOW) {
+    if (app->session.protocol == SC_PROTO_X11) {
         win_count = sc_enumerate_x11_windows(wins, SC_MAX_WINDOWS);
     }
 
@@ -304,6 +463,7 @@ static gboolean perform_delayed_desktop_grab(gpointer user_data) {
         win_count,
         on_snip_completed,
         on_snip_cancelled,
+        app->session.protocol == SC_PROTO_WAYLAND ? on_overlay_window_recapture : NULL,
         app
     );
     g_object_unref(desktop);
@@ -313,19 +473,37 @@ static gboolean perform_delayed_desktop_grab(gpointer user_data) {
 static void begin_capture_sequence(ScApp *app) {
     app->capture_in_progress = true;
     bool was_visible = gtk_widget_get_visible(app->window);
+    app->window_was_visible = was_visible;
     gtk_widget_hide(app->window);
     while (gtk_events_pending()) {
         gtk_main_iteration_do(FALSE);
     }
-    g_timeout_add(was_visible ? 200 : 40, perform_delayed_desktop_grab, app);
+    if (app->grab_timer_id != 0) {
+        g_source_remove(app->grab_timer_id);
+    }
+    app->grab_timer_id = g_timeout_add(was_visible ? 200 : 40, perform_delayed_desktop_grab, app);
+}
+
+static void reset_new_button(ScApp *app) {
+    if (!app->new_btn) return;
+    gtk_button_set_label(GTK_BUTTON(app->new_btn), "+ New");
+    gtk_widget_set_sensitive(app->new_btn, TRUE);
+}
+
+static void cancel_countdown(ScApp *app) {
+    if (app->countdown_timer_id != 0) {
+        g_source_remove(app->countdown_timer_id);
+        app->countdown_timer_id = 0;
+    }
+    app->countdown_remaining = 0;
+    reset_new_button(app);
 }
 
 static gboolean on_countdown_tick(gpointer user_data) {
     ScApp *app = (ScApp *)user_data;
     if (app->countdown_remaining <= 0) {
         app->countdown_timer_id = 0;
-        gtk_button_set_label(GTK_BUTTON(app->new_btn), "+ New");
-        gtk_widget_set_sensitive(app->new_btn, TRUE);
+        reset_new_button(app);
         begin_capture_sequence(app);
         return G_SOURCE_REMOVE;
     }
@@ -363,6 +541,8 @@ static void on_mode_changed(GtkComboBox *combo, gpointer user_data) {
     ScSnipMode m = SC_MODE_RECTANGLE;
     if (id && sc_snip_mode_from_string(id, &m)) {
         app->snip_mode = m;
+        app->config.snip_mode = m;
+        app_save_config(app);
     }
 }
 
@@ -370,7 +550,12 @@ static void on_delay_changed(GtkComboBox *combo, gpointer user_data) {
     ScApp *app = (ScApp *)user_data;
     const gchar *id = gtk_combo_box_get_active_id(combo);
     if (id) {
-        app->delay_seconds = atoi(id);
+        int d = atoi(id);
+        if (sc_config_is_valid_delay(d)) {
+            app->delay_seconds = d;
+            app->config.delay_seconds = d;
+            app_save_config(app);
+        }
     }
 }
 
@@ -475,30 +660,100 @@ static void action_save_file(ScApp *app) {
     }
 
     if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
-        char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
-        if (filename) {
-            GdkPixbuf *flat = sc_editor_render_pixbuf(app->editor);
+        char *chosen = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+        gtk_widget_destroy(dlg);
+        dlg = NULL;
+        if (chosen) {
+            /* Append .png when the user typed an extensionless name (e.g. "MySnip") */
+            char *filename = NULL;
+            const char *base = strrchr(chosen, '/');
+            base = base ? base + 1 : chosen;
+            const char *dot = strrchr(base, '.');
+            bool appended_ext = false;
+            if (!dot || dot == base || dot[1] == '\0') {
+                filename = g_strconcat(chosen, dot && dot[1] == '\0' ? "png" : ".png", NULL);
+                appended_ext = true;
+            } else {
+                filename = g_strdup(chosen);
+            }
+            g_free(chosen);
+
+            bool proceed = true;
+            if (appended_ext && g_file_test(filename, G_FILE_TEST_EXISTS)) {
+                /* The chooser only confirmed the extensionless name; confirm the real target */
+                GtkWidget *confirm = gtk_message_dialog_new(
+                    GTK_WINDOW(app->window),
+                    GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                    GTK_MESSAGE_QUESTION,
+                    GTK_BUTTONS_YES_NO,
+                    "A file named \"%s\" already exists. Replace it?",
+                    filename
+                );
+                proceed = gtk_dialog_run(GTK_DIALOG(confirm)) == GTK_RESPONSE_YES;
+                gtk_widget_destroy(confirm);
+            }
+
+            GdkPixbuf *flat = proceed ? sc_editor_render_pixbuf(app->editor) : NULL;
             if (flat) {
                 const char *fmt = "png";
-                size_t flen = strlen(filename);
-                if (flen > 4 && (g_ascii_strcasecmp(filename + flen - 4, ".jpg") == 0 ||
-                                 g_ascii_strcasecmp(filename + flen - 5, ".jpeg") == 0)) {
+                const char *ext = strrchr(filename, '.');
+                if (ext && (g_ascii_strcasecmp(ext, ".jpg") == 0 || g_ascii_strcasecmp(ext, ".jpeg") == 0)) {
                     fmt = "jpeg";
                 }
                 GError *err = NULL;
-                if (gdk_pixbuf_save(flat, filename, fmt, &err, NULL)) {
-                    char msg[256];
+                gboolean saved = FALSE;
+                if (strcmp(fmt, "jpeg") == 0 && gdk_pixbuf_get_has_alpha(flat)) {
+                    /* JPEG has no alpha channel: flatten onto opaque RGB before encoding */
+                    GdkPixbuf *opaque = gdk_pixbuf_composite_color_simple(
+                        flat,
+                        gdk_pixbuf_get_width(flat),
+                        gdk_pixbuf_get_height(flat),
+                        GDK_INTERP_NEAREST,
+                        255,
+                        8,
+                        0xffffffu,
+                        0xffffffu
+                    );
+                    if (opaque) {
+                        GdkPixbuf *rgb = gdk_pixbuf_new(
+                            GDK_COLORSPACE_RGB, FALSE, 8, gdk_pixbuf_get_width(opaque), gdk_pixbuf_get_height(opaque)
+                        );
+                        if (rgb) {
+                            gdk_pixbuf_copy_area(
+                                opaque, 0, 0, gdk_pixbuf_get_width(opaque), gdk_pixbuf_get_height(opaque), rgb, 0, 0
+                            );
+                        }
+                        g_object_unref(opaque);
+                        if (rgb) {
+                            saved = gdk_pixbuf_save(rgb, filename, fmt, &err, "quality", "92", NULL);
+                            g_object_unref(rgb);
+                        }
+                    }
+                } else {
+                    saved = gdk_pixbuf_save(flat, filename, fmt, &err, NULL);
+                }
+                if (saved) {
+                    char msg[512];
                     snprintf(msg, sizeof(msg), "Saved snip to %s", filename);
                     app_set_status_message(app, msg);
-                } else if (err) {
-                    g_error_free(err);
+                } else {
+                    app_set_status_message(app, "Unable to save snip.");
+                    char primary[1200];
+                    snprintf(primary, sizeof(primary), "Unable to save snip to \"%s\".", filename);
+                    app_show_message_dialog(
+                        app,
+                        GTK_MESSAGE_ERROR,
+                        primary,
+                        err && err->message ? err->message : "Unknown image encoder error."
+                    );
                 }
+                if (err) g_error_free(err);
                 g_object_unref(flat);
             }
             g_free(filename);
         }
     }
-    gtk_widget_destroy(dlg);
+    if (dlg) gtk_widget_destroy(dlg);
 }
 
 static void on_save_clicked(GtkButton *btn, gpointer user_data) {
@@ -524,23 +779,54 @@ static void action_open_file(ScApp *app) {
 
     if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
         char *filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+        gtk_widget_destroy(dlg);
+        dlg = NULL;
         if (filename) {
-            GdkPixbuf *loaded = gdk_pixbuf_new_from_file(filename, NULL);
+            GError *err = NULL;
+            GdkPixbuf *loaded = gdk_pixbuf_new_from_file(filename, &err);
             if (loaded) {
                 sc_editor_set_pixbuf(app->editor, loaded);
                 g_object_unref(loaded);
                 app_sync_window_mode(app, true);
                 app_set_status_message(app, "Opened image file.");
+            } else {
+                char primary[1200];
+                snprintf(primary, sizeof(primary), "Unable to open \"%s\".", filename);
+                app_show_message_dialog(
+                    app,
+                    GTK_MESSAGE_ERROR,
+                    primary,
+                    err && err->message ? err->message : "The file is not a supported image."
+                );
             }
+            if (err) g_error_free(err);
             g_free(filename);
         }
     }
-    gtk_widget_destroy(dlg);
+    if (dlg) gtk_widget_destroy(dlg);
 }
 
 static void on_open_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     action_open_file((ScApp *)user_data);
+}
+
+static void on_open_menu_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    ScApp *app = (ScApp *)user_data;
+    if (app->menu_popover) {
+        gtk_popover_popdown(GTK_POPOVER(app->menu_popover));
+    }
+    action_open_file(app);
+}
+
+static void on_quit_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    ScApp *app = (ScApp *)user_data;
+    if (app->menu_popover) {
+        gtk_popover_popdown(GTK_POPOVER(app->menu_popover));
+    }
+    gtk_widget_destroy(app->window);
 }
 
 typedef struct {
@@ -572,6 +858,20 @@ static gboolean on_record_shortcut_key(GtkWidget *widget, GdkEventKey *event, gp
             GTK_LABEL(st->prompt_lbl),
             "Combine regular keys with Ctrl, Alt, or Shift (or press F1-F12 / PrintScreen)."
         );
+        return TRUE;
+    }
+
+    if (is_reserved_editor_chord(lower_kv, mods)) {
+        gchar *acc = gtk_accelerator_get_label(lower_kv, mods);
+        char msg[192];
+        snprintf(
+            msg,
+            sizeof(msg),
+            "%s is reserved for editor actions (Undo/Redo/Copy/Save/New/Open). Choose another combination.",
+            acc ? acc : "That shortcut"
+        );
+        g_free(acc);
+        gtk_label_set_text(GTK_LABEL(st->prompt_lbl), msg);
         return TRUE;
     }
 
@@ -628,6 +928,17 @@ static void on_shortcut_btn_clicked(GtkButton *btn, gpointer user_data) {
         );
         g_free(acc_lbl);
 
+        gchar *acc_name = gtk_accelerator_name(st.recorded_kv, st.recorded_mods);
+        if (acc_name && strlen(acc_name) < sizeof(app->config.custom_shortcut)) {
+            snprintf(app->config.custom_shortcut, sizeof(app->config.custom_shortcut), "%s", acc_name);
+            app_save_config(app);
+        }
+        g_free(acc_name);
+
+        if (app->hotkey) {
+            sc_global_hotkey_bind(app->hotkey, app->custom_keyval, app->custom_mods);
+        }
+
         char btn_txt[96];
         snprintf(btn_txt, sizeof(btn_txt), "Shortcut: %s...", app->custom_shortcut_label);
         gtk_button_set_label(GTK_BUTTON(app->shortcut_btn), btn_txt);
@@ -682,6 +993,20 @@ static gboolean on_main_key_press(GtkWidget *widget, GdkEventKey *event, gpointe
     guint kv = gdk_keyval_to_lower(event->keyval);
     GdkModifierType mods = event->state & gtk_accelerator_get_default_mod_mask();
 
+    /* Escape cancels an active delayed-snip countdown, then exits Crop mode */
+    if (event->keyval == GDK_KEY_Escape && mods == 0) {
+        if (app->countdown_timer_id != 0) {
+            cancel_countdown(app);
+            app_set_status_message(app, "Delayed snip cancelled.");
+            return TRUE;
+        }
+        if (sc_editor_is_crop_active(app->editor)) {
+            sc_editor_cancel_crop(app->editor);
+            return TRUE;
+        }
+        return FALSE;
+    }
+
     /* PrintScreen / SysRq always triggers capture immediately */
     if (kv == GDK_KEY_Print || kv == GDK_KEY_Sys_Req || event->keyval == GDK_KEY_Print) {
         trigger_new_snip(app);
@@ -689,9 +1014,20 @@ static gboolean on_main_key_press(GtkWidget *widget, GdkEventKey *event, gpointe
     }
 
     /* User-configurable custom capture shortcut (default Ctrl+Shift+S) */
-    if (app->custom_keyval != 0 && kv == app->custom_keyval && mods == app->custom_mods) {
+    if (shortcut_matches(app->custom_keyval, app->custom_mods, kv, mods)) {
         trigger_new_snip(app);
         return TRUE;
+    }
+
+    if (mods == (GDK_CONTROL_MASK | GDK_SHIFT_MASK)) {
+        if (kv == GDK_KEY_z) {
+            sc_editor_redo(app->editor);
+            return TRUE;
+        }
+        if (kv == GDK_KEY_plus) {
+            sc_editor_set_zoom(app->editor, sc_editor_get_zoom(app->editor) + 0.25);
+            return TRUE;
+        }
     }
 
     if (mods == GDK_CONTROL_MASK) {
@@ -738,10 +1074,45 @@ static gboolean on_main_key_press(GtkWidget *widget, GdkEventKey *event, gpointe
 
 static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
     (void)widget;
-    (void)user_data;
+    ScApp *app = (ScApp *)user_data;
+    if (app) {
+        /* Never let a pending countdown / desktop-grab timer fire against a destroyed window */
+        if (app->countdown_timer_id != 0) {
+            g_source_remove(app->countdown_timer_id);
+            app->countdown_timer_id = 0;
+        }
+        if (app->grab_timer_id != 0) {
+            g_source_remove(app->grab_timer_id);
+            app->grab_timer_id = 0;
+        }
+        if (app->hotkey) {
+            sc_global_hotkey_free(app->hotkey);
+            app->hotkey = NULL;
+        }
+        app->new_btn = NULL;
+        app->status_msg_lbl = NULL;
+    }
     if (gtk_main_level() > 0) {
         gtk_main_quit();
     }
+}
+
+/* --background: closing the window keeps SnipClip resident for global hotkeys */
+static gboolean on_window_delete(GtkWidget *widget, GdkEvent *event, gpointer user_data) {
+    (void)event;
+    ScApp *app = (ScApp *)user_data;
+    if (app && app->background_mode) {
+        if (app->countdown_timer_id != 0) {
+            cancel_countdown(app);
+        }
+        gtk_widget_hide(widget);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void on_global_hotkey_activated(void *user_data) {
+    trigger_new_snip((ScApp *)user_data);
 }
 
 static gboolean on_autostart_snip(gpointer user_data) {
@@ -800,7 +1171,7 @@ static void build_main_window(
     gtk_container_add(GTK_CONTAINER(app->window), vbox);
 
     /* Row 1: Compact Microsoft Snipping Tool Top Bar */
-    GtkWidget *cmd_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+    GtkWidget *cmd_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     gtk_style_context_add_class(gtk_widget_get_style_context(cmd_bar), "sc-cmd-bar");
     gtk_box_pack_start(GTK_BOX(vbox), cmd_bar, FALSE, FALSE, 0);
 
@@ -839,7 +1210,7 @@ static void build_main_window(
     gtk_box_pack_start(GTK_BOX(cmd_bar), spacer, TRUE, TRUE, 0);
 
     /* Editor-only quick actions: Undo, Redo | Copy, Save */
-    app->editor_actions_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+    app->editor_actions_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
     gtk_box_pack_start(GTK_BOX(cmd_bar), app->editor_actions_box, FALSE, FALSE, 0);
 
     app->undo_btn = gtk_button_new_with_label("Undo");
@@ -878,12 +1249,12 @@ static void build_main_window(
 
     hide_with_no_show_all(app->editor_actions_box);
 
-    /* Always-visible right-side compact actions: Open & Overflow Menu */
-    GtkWidget *open_btn = gtk_button_new_with_label("Open");
-    gtk_style_context_add_class(gtk_widget_get_style_context(open_btn), "sc-tool-btn");
-    gtk_widget_set_tooltip_text(open_btn, "Open image file (Ctrl+O)");
-    g_signal_connect(open_btn, "clicked", G_CALLBACK(on_open_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), open_btn, FALSE, FALSE, 0);
+    /* Launcher-mode right-side compact actions: Open (hidden in editor mode) & Overflow Menu */
+    app->open_btn = gtk_button_new_with_label("Open");
+    gtk_style_context_add_class(gtk_widget_get_style_context(app->open_btn), "sc-tool-btn");
+    gtk_widget_set_tooltip_text(app->open_btn, "Open image file (Ctrl+O)");
+    g_signal_connect(app->open_btn, "clicked", G_CALLBACK(on_open_clicked), app);
+    gtk_box_pack_start(GTK_BOX(cmd_bar), app->open_btn, FALSE, FALSE, 0);
 
     app->menu_btn = gtk_menu_button_new();
     gtk_button_set_label(GTK_BUTTON(app->menu_btn), "\xe2\x8b\xaf");
@@ -897,6 +1268,10 @@ static void build_main_window(
     GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_container_set_border_width(GTK_CONTAINER(menu_box), 6);
     gtk_container_add(GTK_CONTAINER(app->menu_popover), menu_box);
+
+    GtkWidget *open_menu_btn = make_popover_menu_btn("Open Image... (Ctrl+O)");
+    g_signal_connect(open_menu_btn, "clicked", G_CALLBACK(on_open_menu_clicked), app);
+    gtk_box_pack_start(GTK_BOX(menu_box), open_menu_btn, FALSE, FALSE, 0);
 
     char sc_txt[96];
     snprintf(sc_txt, sizeof(sc_txt), "Shortcut: %s...", app->custom_shortcut_label);
@@ -916,6 +1291,10 @@ static void build_main_window(
     GtkWidget *about_btn = make_popover_menu_btn(badge_txt);
     g_signal_connect(about_btn, "clicked", G_CALLBACK(on_about_clicked), app);
     gtk_box_pack_start(GTK_BOX(menu_box), about_btn, FALSE, FALSE, 0);
+
+    GtkWidget *quit_btn = make_popover_menu_btn("Quit SnipClip");
+    g_signal_connect(quit_btn, "clicked", G_CALLBACK(on_quit_clicked), app);
+    gtk_box_pack_start(GTK_BOX(menu_box), quit_btn, FALSE, FALSE, 0);
     gtk_widget_show_all(menu_box);
 
     /* Row 2: Horizontally Scrollable Annotation Strip (editor mode only) */
@@ -1041,18 +1420,29 @@ static void build_main_window(
     gtk_box_pack_start(GTK_BOX(vbox), app->status_bar, FALSE, FALSE, 0);
     hide_with_no_show_all(app->status_bar);
 
-    g_signal_connect(app->window, "destroy", G_CALLBACK(on_window_destroy), NULL);
+    g_signal_connect(app->window, "destroy", G_CALLBACK(on_window_destroy), app);
+    g_signal_connect(app->window, "delete-event", G_CALLBACK(on_window_delete), app);
     g_signal_connect(app->window, "key-press-event", G_CALLBACK(on_main_key_press), app);
 
     /* Make permanent layout children visible without overriding no_show_all subtrees */
     gtk_widget_show_all(vbox);
 
     if (initial_image_path && initial_image_path[0] != '\0') {
-        GdkPixbuf *loaded = gdk_pixbuf_new_from_file(initial_image_path, NULL);
+        GError *err = NULL;
+        GdkPixbuf *loaded = gdk_pixbuf_new_from_file(initial_image_path, &err);
         if (loaded) {
             sc_editor_set_pixbuf(app->editor, loaded);
             g_object_unref(loaded);
+        } else {
+            /* Unreadable / corrupt CLI image: report on stderr and continue with the launcher */
+            fprintf(
+                stderr,
+                "SnipClip Warning: unable to open image '%s': %s\n",
+                initial_image_path,
+                err && err->message ? err->message : "unsupported or unreadable file"
+            );
         }
+        if (err) g_error_free(err);
     }
 
     int iw = 0, ih = 0;
@@ -1071,18 +1461,19 @@ static void build_main_window(
     app_sync_window_mode(app, false);
 
     if (!present_window) {
+        if (autostart) {
+            g_idle_add(on_autostart_snip, app);
+        }
         return;
     }
 
     if (autostart) {
         if (app->delay_seconds > 0) {
-            gtk_widget_show(app->window);
-            gtk_window_present(GTK_WINDOW(app->window));
+            app_present_window(app);
         }
         g_idle_add(on_autostart_snip, app);
     } else {
-        gtk_widget_show(app->window);
-        gtk_window_present(GTK_WINDOW(app->window));
+        app_present_window(app);
     }
 }
 
@@ -1099,21 +1490,47 @@ static void print_help(void) {
         "  -d, --delay SECONDS    Delay before capture: 0, 3, 5, or 10\n"
         "  --capture-now          Immediately begin capture on launch\n"
         "  --shortcut KEYS        Custom capture shortcut alongside PrintScreen (default: Ctrl+Shift+S)\n"
+        "  --background           Start resident without showing the window; PrintScreen and the\n"
+        "                         custom shortcut trigger snips via global desktop hotkeys\n"
+        "                         (X11 XGrabKey / Wayland org.freedesktop.portal.GlobalShortcuts)\n\n"
+        "Preferences (mode, delay, shortcut) persist in $XDG_CONFIG_HOME/snipclip/config.ini\n"
+        "(default ~/.config/snipclip/config.ini); command-line flags override them for one run.\n"
     );
+}
+
+/* Zero-monitor compositors (nested / sandboxed Wayland sessions) make GTK spam
+ * "gdk_monitor_get_scale_factor: assertion 'GDK_IS_MONITOR (monitor)' failed" while measuring
+ * widgets. Drop only that known-benign message and forward everything else unchanged. */
+static void quiet_monitorless_gdk_log(const gchar *domain, GLogLevelFlags level, const gchar *message, gpointer ud) {
+    if (message && strstr(message, "gdk_monitor_get_scale_factor") != NULL) {
+        return;
+    }
+    g_log_default_handler(domain, level, message, ud);
 }
 
 int main(int argc, char **argv) {
     g_set_prgname("snipclip");
     g_set_application_name("SnipClip");
 
-    ScSnipMode init_mode = SC_MODE_RECTANGLE;
-    int init_delay = 0;
+    /* Persisted preferences load BEFORE CLI parsing so explicit flags override them for this run */
+    ScConfig disk_config;
+    sc_config_init_defaults(&disk_config);
+    char config_path[4096] = "";
+    bool have_config_path = sc_config_default_path(config_path, sizeof(config_path));
+    if (have_config_path) {
+        (void)sc_config_load(config_path, &disk_config);
+    }
+
+    ScSnipMode init_mode = disk_config.snip_mode;
+    int init_delay = disk_config.delay_seconds;
     bool autostart_snip = false;
     bool want_version = false;
     bool want_help = false;
     bool want_detect_json = false;
     bool want_ui_metrics = false;
-    char shortcut_spec[64] = "Ctrl+Shift+S";
+    bool want_background = false;
+    char shortcut_spec[64];
+    snprintf(shortcut_spec, sizeof(shortcut_spec), "%s", disk_config.custom_shortcut);
     char initial_image[1024] = "";
 
     /* Resilient parser: supports optional CLI flags while ignoring unknown desktop-launcher flags */
@@ -1131,16 +1548,18 @@ int main(int argc, char **argv) {
             want_ui_metrics = true;
         } else if (strcmp(arg, "--capture-now") == 0) {
             autostart_snip = true;
+        } else if (strcmp(arg, "--background") == 0) {
+            want_background = true;
         } else if ((strcmp(arg, "-m") == 0 || strcmp(arg, "--mode") == 0) && i + 1 < argc) {
             sc_snip_mode_from_string(argv[++i], &init_mode);
         } else if (strncmp(arg, "--mode=", 7) == 0) {
             sc_snip_mode_from_string(arg + 7, &init_mode);
         } else if ((strcmp(arg, "-d") == 0 || strcmp(arg, "--delay") == 0) && i + 1 < argc) {
             int d = atoi(argv[++i]);
-            if (d == 0 || d == 3 || d == 5 || d == 10) init_delay = d;
+            if (sc_config_is_valid_delay(d)) init_delay = d;
         } else if (strncmp(arg, "--delay=", 8) == 0) {
             int d = atoi(arg + 8);
-            if (d == 0 || d == 3 || d == 5 || d == 10) init_delay = d;
+            if (sc_config_is_valid_delay(d)) init_delay = d;
         } else if (strcmp(arg, "--shortcut") == 0 && i + 1 < argc) {
             snprintf(shortcut_spec, sizeof(shortcut_spec), "%s", argv[++i]);
         } else if (strncmp(arg, "--shortcut=", 11) == 0) {
@@ -1169,7 +1588,7 @@ int main(int argc, char **argv) {
     /* Auto-detect Wayland vs. X11 automatically on startup (zero CLI required) */
     ScDisplaySession session = sc_detect_display_session();
     if (want_detect_json) {
-        char json_buf[2048];
+        char json_buf[4096];
         sc_format_display_session_json(&session, json_buf, sizeof(json_buf));
         fputs(json_buf, stdout);
         return 0;
@@ -1188,6 +1607,9 @@ int main(int argc, char **argv) {
     GdkDisplay *disp = gdk_display_get_default();
     if (disp) {
         sc_reconcile_with_gdk_backend_name(&session, G_OBJECT_TYPE_NAME(disp));
+        if (gdk_display_get_n_monitors(disp) == 0) {
+            g_log_set_handler("Gdk", G_LOG_LEVEL_CRITICAL, quiet_monitorless_gdk_log, NULL);
+        }
     }
 
     ScApp app;
@@ -1195,15 +1617,31 @@ int main(int argc, char **argv) {
     app.session = session;
     app.snip_mode = init_mode;
     app.delay_seconds = init_delay;
-    if (!parse_shortcut_accelerator(
-            shortcut_spec,
-            &app.custom_keyval,
-            &app.custom_mods,
-            app.custom_shortcut_label,
-            sizeof(app.custom_shortcut_label)
-        )) {
+    app.background_mode = want_background && !want_ui_metrics;
+    app.config = disk_config;
+    app.have_config_path = have_config_path;
+    if (have_config_path) {
+        snprintf(app.config_path, sizeof(app.config_path), "%s", config_path);
+    }
+
+    bool shortcut_ok = parse_shortcut_accelerator(
+        shortcut_spec,
+        &app.custom_keyval,
+        &app.custom_mods,
+        app.custom_shortcut_label,
+        sizeof(app.custom_shortcut_label)
+    );
+    if (shortcut_ok && is_reserved_editor_chord(app.custom_keyval, app.custom_mods)) {
+        fprintf(
+            stderr,
+            "SnipClip Warning: shortcut '%s' is reserved for editor actions; using Ctrl+Shift+S.\n",
+            shortcut_spec
+        );
+        shortcut_ok = false;
+    }
+    if (!shortcut_ok) {
         parse_shortcut_accelerator(
-            "Ctrl+Shift+S",
+            SC_CONFIG_DEFAULT_SHORTCUT,
             &app.custom_keyval,
             &app.custom_mods,
             app.custom_shortcut_label,
@@ -1212,6 +1650,7 @@ int main(int argc, char **argv) {
     }
 
     if (want_ui_metrics) {
+        /* Never registers global hotkeys or portal sessions: metrics stay instant and quiet */
         build_main_window(&app, "", false, false);
         int def_w = 0, def_h = 0;
         gtk_window_get_default_size(GTK_WINDOW(app.window), &def_w, &def_h);
@@ -1239,15 +1678,27 @@ int main(int argc, char **argv) {
             launcher_nat_w,
             editor_min_w
         );
+        fflush(stdout);
 
         gtk_widget_destroy(app.window);
         sc_editor_canvas_free(app.editor);
         return 0;
     }
 
-    build_main_window(&app, initial_image, autostart_snip, true);
+    build_main_window(&app, initial_image, autostart_snip, !app.background_mode);
+
+    /* System-wide PrintScreen + custom shortcut (non-blocking; silent when unsupported) */
+    app.hotkey = sc_global_hotkey_new(&app.session, on_global_hotkey_activated, &app);
+    if (app.hotkey) {
+        sc_global_hotkey_bind(app.hotkey, app.custom_keyval, app.custom_mods);
+    }
+
     gtk_main();
 
+    if (app.hotkey) {
+        sc_global_hotkey_free(app.hotkey);
+        app.hotkey = NULL;
+    }
     sc_editor_canvas_free(app.editor);
     return 0;
 }

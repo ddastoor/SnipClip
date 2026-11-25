@@ -47,6 +47,12 @@ typedef struct {
 
 ScRect sc_normalize_rect(double x1, double y1, double x2, double y2, int max_w, int max_h);
 
+/* Map a rectangle from a logical (widget / overlay) coordinate space of logical_w x logical_h
+ * into the physical pixel space of a pixbuf_w x pixbuf_h pixbuf (HiDPI scale compensation).
+ * The result is expanded outward to whole pixels and clamped to the pixbuf bounds.
+ * Works in either direction (pass physical dims as "logical" to map physical -> logical). */
+ScRect sc_scale_rect_to_pixbuf(ScRect logical_rect, int logical_w, int logical_h, int pixbuf_w, int pixbuf_h);
+
 bool sc_polygon_bbox(const ScPoint *pts, size_t count, int max_w, int max_h, ScRect *out_rect);
 
 bool sc_point_in_polygon(double px, double py, const ScPoint *pts, size_t count);
