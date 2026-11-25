@@ -12,3 +12,8 @@ __pycache__/
 # OS / editor scratch files
 .DS_Store
 *.swp
+
+# Local environment files (never commit real credentials)
+.env
+.env.*
+!.env.example

@@ -43,12 +43,12 @@ jobs:
           fi
 
       - name: Compile native GTK 3 binary & build Debian (.deb) package
-        run: |
-          chmod +x scripts/build-deb.sh scripts/run-tests.sh
-          ./scripts/build-deb.sh
+        run: bash ./scripts/build-deb.sh
 
-      - name: Execute full repository test suite (C + ELF/.deb + TypeScript)
-        run: ./scripts/run-tests.sh
+      # run-tests.sh gates: C unit -> Xvfb GTK canvas (make -C native test-gtk) -> ELF/.deb (incl.
+      # X11 XGrabKey collision) -> TS parity -> web UI (npm run test:ui) -> tsc --noEmit
+      - name: Execute full repository test suite (C + GTK canvas + ELF/.deb + TypeScript + web UI)
+        run: bash ./scripts/run-tests.sh
 
-      - name: Verify production web build
+      - name: Verify production web build (after full test suite)
         run: npm run build

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -20,6 +22,75 @@ VERSION_FILE = ROOT_DIR / "VERSION"
 NATIVE_BIN = ROOT_DIR / "native" / "build" / "snipclip"
 RELEASES_DIR = ROOT_DIR / "public" / "releases"
 RELEASE_INFO_JSON = ROOT_DIR / "src" / "data" / "releaseInfo.json"
+
+CANONICAL_HOMEPAGE = "https://github.com/ddastoor/SnipClip"
+CANONICAL_DEVELOPER_ID = "io.github.ddastoor"
+FORBIDDEN_LEGACY_METADATA = ("snipclip/snipclip", "maintainers@snipclip.org")
+
+# Runs INSIDE an `xvfb-run -a` session: one X11 client grabs XK_Print (0xff61) on the root
+# window with AnyModifier, then launches SnipClip (argv[1]) so its own XGrabKey hits BadAccess.
+# Prints a single JSON line describing the outcome.
+X11_HOTKEY_COLLISION_HELPER = r"""
+import ctypes, json, os, subprocess, sys, time
+xlib = ctypes.CDLL("libX11.so.6")
+xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+xlib.XOpenDisplay.restype = ctypes.c_void_p
+xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+xlib.XDefaultRootWindow.restype = ctypes.c_ulong
+xlib.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+xlib.XKeysymToKeycode.restype = ctypes.c_ubyte
+xlib.XGrabKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_ulong,
+                          ctypes.c_int, ctypes.c_int, ctypes.c_int]
+xlib.XGrabKey.restype = ctypes.c_int
+xlib.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+xlib.XSync.restype = ctypes.c_int
+xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+xlib.XCloseDisplay.restype = ctypes.c_int
+ERRS = []
+HANDLER_T = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+def _on_error(_dpy, _ev):
+    ERRS.append(1)
+    return 0
+handler = HANDLER_T(_on_error)
+xlib.XSetErrorHandler.argtypes = [HANDLER_T]
+xlib.XSetErrorHandler.restype = ctypes.c_void_p
+xlib.XSetErrorHandler(handler)
+dpy = xlib.XOpenDisplay(None)
+if not dpy:
+    print(json.dumps({"error": "XOpenDisplay failed"}))
+    sys.exit(3)
+root = xlib.XDefaultRootWindow(dpy)
+keycode = xlib.XKeysymToKeycode(dpy, 0xff61)
+ANY_MODIFIER, GRAB_MODE_ASYNC = 1 << 15, 1
+xlib.XGrabKey(dpy, keycode, ANY_MODIFIER, root, 1, GRAB_MODE_ASYNC, GRAB_MODE_ASYNC)
+xlib.XSync(dpy, 0)
+env = dict(os.environ)
+env.pop("WAYLAND_DISPLAY", None)
+env["XDG_SESSION_TYPE"] = "x11"
+env["GDK_BACKEND"] = "x11"
+proc = subprocess.Popen([sys.argv[1]], env=env, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+alive = True
+try:
+    proc.wait(timeout=float(sys.argv[2]))
+    alive = False
+except subprocess.TimeoutExpired:
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+out, err = proc.communicate()
+xlib.XCloseDisplay(dpy)
+print(json.dumps({
+    "keycode": int(keycode),
+    "pre_grab_errors": len(ERRS),
+    "alive_at_deadline": alive,
+    "returncode": proc.returncode,
+    "stderr": err[-4000:],
+}))
+"""
 
 
 class NativeElfAndDebPackageTests(unittest.TestCase):
@@ -36,7 +107,7 @@ class NativeElfAndDebPackageTests(unittest.TestCase):
 
         if not NATIVE_BIN.exists() or not cls.deb_path.exists():
             subprocess.run(
-                [str(ROOT_DIR / "scripts" / "build-deb.sh"), cls.version],
+                ["bash", str(ROOT_DIR / "scripts" / "build-deb.sh"), cls.version],
                 cwd=str(ROOT_DIR),
                 check=True,
             )
@@ -185,9 +256,10 @@ class NativeElfAndDebPackageTests(unittest.TestCase):
                 self.assertEqual(out_sock["wayland_display"], "wayland-0")
                 self.assertIn("socket", out_sock["detection_source"])
 
-                # 4. Explicit X11 DISPLAY overrides unreferenced Wayland socket when WAYLAND_DISPLAY is unset
+                # 4. Explicit X11 DISPLAY overrides unreferenced Wayland socket when WAYLAND_DISPLAY is unset.
+                #    PATH excludes loginctl so a developer's live Wayland login session cannot leak in.
                 env_x11_override = {
-                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "PATH": "/nonexistent",
                     "HOME": rt_dir,
                     "XDG_RUNTIME_DIR": rt_dir,
                     "DISPLAY": ":99",
@@ -221,7 +293,11 @@ class NativeElfAndDebPackageTests(unittest.TestCase):
             ],
             text=True,
         )
-        metrics = json.loads(metrics_out.strip())
+        # Some user-space xvfb-run wrappers merge GTK/GDK stderr diagnostics into stdout;
+        # the metrics contract is the single JSON object line.
+        json_lines = [ln.strip() for ln in metrics_out.splitlines() if ln.strip().startswith("{")]
+        self.assertTrue(json_lines, f"No --print-ui-metrics JSON in output: {metrics_out[-2000:]!r}")
+        metrics = json.loads(json_lines[-1])
         self.assertEqual(metrics["launcher_default_w"], 460)
         self.assertEqual(metrics["launcher_default_h"], 200)
         self.assertLessEqual(
@@ -320,6 +396,97 @@ class NativeElfAndDebPackageTests(unittest.TestCase):
         self.assertEqual(rel_info["debFilename"], self.deb_filename)
         actual_sha256 = hashlib.sha256(self.deb_path.read_bytes()).hexdigest()
         self.assertEqual(rel_info["sha256"], actual_sha256)
+
+    def test_package_metadata_uses_canonical_ddastoor_snipclip_upstream(self) -> None:
+        """Verify control, AppStream, copyright & changelog point at github.com/ddastoor/SnipClip."""
+        control_text = (self.extract_dir / "DEBIAN" / "control").read_text(encoding="utf-8")
+        self.assertIn(f"Homepage: {CANONICAL_HOMEPAGE}", control_text)
+        self.assertIn("Maintainer: Darayus Dastoor <ddastoor@users.noreply.github.com>", control_text)
+
+        metainfo_path = self.extract_dir / "usr" / "share" / "metainfo" / "snipclip.metainfo.xml"
+        metainfo_text = metainfo_path.read_text(encoding="utf-8")
+        self.assertIn(CANONICAL_HOMEPAGE, metainfo_text)
+        self.assertIn(CANONICAL_DEVELOPER_ID, metainfo_text)
+        root = ET.parse(metainfo_path).getroot()
+        self.assertEqual(root.findtext("./url[@type='homepage']"), CANONICAL_HOMEPAGE)
+        dev_el = root.find("./developer")
+        self.assertIsNotNone(dev_el)
+        self.assertEqual(dev_el.attrib.get("id"), CANONICAL_DEVELOPER_ID)
+
+        doc_dir = self.extract_dir / "usr" / "share" / "doc" / "snipclip"
+        copyright_text = (doc_dir / "copyright").read_text(encoding="utf-8")
+        self.assertIn(f"Source: {CANONICAL_HOMEPAGE}", copyright_text)
+        changelog_text = gzip.decompress((doc_dir / "changelog.Debian.gz").read_bytes()).decode("utf-8")
+        self.assertIn("Darayus Dastoor <ddastoor@users.noreply.github.com>", changelog_text)
+
+        for label, text in (
+            ("DEBIAN/control", control_text),
+            ("snipclip.metainfo.xml", metainfo_text),
+            ("copyright", copyright_text),
+            ("changelog.Debian.gz", changelog_text),
+        ):
+            for legacy in FORBIDDEN_LEGACY_METADATA:
+                self.assertNotIn(legacy, text, f"Legacy metadata '{legacy}' found in {label}")
+
+    def test_x11_global_hotkey_registration_handles_grab_collision_cleanly(self) -> None:
+        """Pre-grab XK_Print in another X11 client; SnipClip's XGrabKey BadAccess must not crash it."""
+        xvfb = shutil.which("xvfb-run")
+        if not xvfb:
+            self.skipTest("xvfb-run not installed in minimal container")
+
+        with tempfile.TemporaryDirectory() as home_dir:
+            env = dict(os.environ)
+            env.update(
+                {
+                    "HOME": home_dir,
+                    "XDG_CONFIG_HOME": str(Path(home_dir) / ".config"),
+                    "XDG_CACHE_HOME": str(Path(home_dir) / ".cache"),
+                    "NO_AT_BRIDGE": "1",
+                }
+            )
+            proc = subprocess.run(
+                [
+                    xvfb,
+                    "-a",
+                    "-s",
+                    "-screen 0 1920x1080x24",
+                    "python3",
+                    "-c",
+                    X11_HOTKEY_COLLISION_HELPER,
+                    str(self.packaged_bin),
+                    "1.5",
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+        self.assertEqual(proc.returncode, 0, f"X11 collision helper failed: {proc.stderr}")
+        json_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+        self.assertTrue(json_lines, f"No helper JSON output: {proc.stdout!r} {proc.stderr!r}")
+        result = json.loads(json_lines[-1])
+
+        self.assertNotIn("error", result)
+        self.assertGreater(result["keycode"], 0, "XK_Print must map to a keycode under Xvfb")
+        self.assertEqual(result["pre_grab_errors"], 0, "Helper's own pre-grab of XK_Print failed")
+
+        stderr = result["stderr"]
+        self.assertNotIn("X Error of failed request", stderr, f"Unhandled X11 error:\n{stderr}")
+        self.assertNotIn("Gdk-ERROR", stderr, f"GDK aborted on X11 error:\n{stderr}")
+        rc = result["returncode"]
+        crash_codes = {
+            -signal.SIGABRT,
+            -signal.SIGSEGV,
+            -signal.SIGTRAP,
+            -signal.SIGBUS,
+            128 + signal.SIGABRT,
+            128 + signal.SIGSEGV,
+            128 + signal.SIGTRAP,
+        }
+        self.assertNotIn(rc, crash_codes, f"SnipClip crashed (rc={rc}) on XGrabKey BadAccess:\n{stderr}")
+        if not result["alive_at_deadline"]:
+            # Exiting on its own before the deadline is only acceptable as a clean exit.
+            self.assertEqual(rc, 0, f"SnipClip exited early (rc={rc}) on hotkey collision:\n{stderr}")
 
 
 if __name__ == "__main__":

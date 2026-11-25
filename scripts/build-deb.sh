@@ -89,10 +89,10 @@ cat > "${STAGE_DIR}/usr/share/metainfo/snipclip.metainfo.xml" <<EOF
   <project_license>MIT</project_license>
   <name>SnipClip</name>
   <summary>Native GTK 3 Windows Snipping Tool clone for Debian-based Linux (X11 &amp; Wayland)</summary>
-  <developer id="io.github.snipclip">
-    <name>SnipClip Contributors</name>
+  <developer id="io.github.ddastoor">
+    <name>Darayus Dastoor</name>
   </developer>
-  <developer_name>SnipClip Contributors</developer_name>
+  <developer_name>Darayus Dastoor</developer_name>
   <description>
     <p>
       SnipClip is a natively compiled GTK 3 + Cairo screenshot and annotation studio bringing the
@@ -116,7 +116,7 @@ cat > "${STAGE_DIR}/usr/share/metainfo/snipclip.metainfo.xml" <<EOF
     <category>2DGraphics</category>
     <category>GTK</category>
   </categories>
-  <url type="homepage">https://github.com/snipclip/snipclip</url>
+  <url type="homepage">https://github.com/ddastoor/SnipClip</url>
   <content_rating type="oars-1.1" />
   <releases>
     <release version="${CLEAN_VERSION}" date="${RELEASE_DATE_YMD}" />
@@ -129,7 +129,7 @@ chmod 0644 "${STAGE_DIR}/usr/share/metainfo/snipclip.metainfo.xml"
 cat > "${STAGE_DIR}/usr/share/doc/snipclip/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: snipclip
-Source: https://github.com/snipclip/snipclip
+Source: https://github.com/ddastoor/SnipClip
 
 Files: *
 Copyright: 2026 SnipClip Contributors
@@ -155,7 +155,7 @@ snipclip (${CLEAN_VERSION}) stable; urgency=medium
   * Automatic GUI startup X11 and Wayland detection via environment, UNIX sockets, and loginctl.
   * PackageKit/Discover xz archive format, AppStream metainfo, and XDG/Debian menu integration.
 
- -- SnipClip Maintainers <maintainers@snipclip.org>  ${BUILD_DATE_RFC}
+ -- Darayus Dastoor <ddastoor@users.noreply.github.com>  ${BUILD_DATE_RFC}
 EOF
 gzip -9 -n "${STAGE_DIR}/usr/share/doc/snipclip/changelog.Debian"
 chmod 0644 "${STAGE_DIR}/usr/share/doc/snipclip/changelog.Debian.gz"
@@ -171,8 +171,8 @@ Architecture: ${ARCH}
 Installed-Size: ${INSTALLED_KB}
 Depends: ${DEPENDS_LIST}
 Recommends: ${RECOMMENDS_LIST}
-Maintainer: SnipClip Contributors <maintainers@snipclip.org>
-Homepage: https://github.com/snipclip/snipclip
+Maintainer: Darayus Dastoor <ddastoor@users.noreply.github.com>
+Homepage: https://github.com/ddastoor/SnipClip
 Description: Native GTK 3 Windows Snipping Tool clone for Debian Linux (X11 & Wayland)
  SnipClip is a natively compiled C + GTK 3 + Cairo screenshot and annotation
  application for Debian, Ubuntu, Linux Mint, Pop!_OS, KDE Plasma, GNOME, XFCE,
