@@ -50,7 +50,7 @@ The repository implements a **dual-surface architecture** synchronized to a sing
 
 ### 2.2 Web Workbench `package.json` Dependencies
 
-No lockfile (`package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`) is committed to the repository; CI and `.agents/environment.json` install via `npm install --no-package-lock --no-audit --no-fund` when `package-lock.json` is absent.
+No lockfile (`package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`) is committed to the repository; CI installs via `npm install --no-package-lock --no-audit --no-fund` when `package-lock.json` is absent.
 
 **Runtime `dependencies` (`package.json` lines 15–19)**:
 - `react`: `^19.0.0` — UI component rendering (`StrictMode`, hooks).
@@ -87,8 +87,6 @@ No lockfile (`package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`) is committed
 
 ```text
 SnipClip/
-├── .agents/
-│   └── environment.json                    # Cloud VM bootstrap command: apt-get native + xvfb/xauth deps + npm install + make -C native all
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                          # Push/PR CI on ubuntu-latest: apt deps, Node 22, build-deb.sh, 6-stage run-tests.sh, npm run build
@@ -157,7 +155,6 @@ SnipClip/
 ├── node_modules/                           # [GITIGNORED] Installed npm packages
 ├── .env.example                            # Sanitized environment variable reference template (documents runtime/build/CI/Vite variables)
 ├── .gitignore                              # Ignores node_modules/, dist/, native/build/, __pycache__/, *.py[cod], .DS_Store, *.swp, .env, .env.* (except !.env.example)
-├── AGENTS.md                               # Google Antigravity workspace bootstrap rules & engineering invariants (plain Markdown, no YAML frontmatter)
 ├── index.html                              # Vite HTML entry shell loading Google Fonts (`Plus Jakarta Sans`, `JetBrains Mono`) and `/src/main.tsx`
 ├── metadata.json                           # Sanitized project metadata file (`majorCapabilities: []`)
 ├── package.json                            # Web Workbench manifest (`version: "2.1.0"`, `"type": "module"`, 7 npm scripts including `test` and `test:ui`)

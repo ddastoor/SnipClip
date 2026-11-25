@@ -1,6 +1,6 @@
 # SnipClip — Local Continuation Tracker & Engineering Roadmap (`todo.md`)
 
-> **Canonical Task & Continuation Ledger**: Read this file alongside [`SPEC.md`](./SPEC.md) and [`AGENTS.md`](./AGENTS.md) at the start of every Google Antigravity session. Update checkbox states (`- [ ]` → `- [x]`) and Handoff Snapshot metadata whenever tasks are completed or reprioritized.
+> **Canonical Task & Continuation Ledger**: Read this file alongside [`SPEC.md`](./SPEC.md) at the start of each development session. Update checkbox states (`- [ ]` → `- [x]`) and Handoff Snapshot metadata whenever tasks are completed or reprioritized.
 
 ---
 
@@ -90,9 +90,7 @@ All Step 0 local onboarding & verification steps have been completed on the loca
 - [x] **Step 0.7 — Optional `.env` setup (only if disabling Vite HMR)**:
   - SnipClip requires **zero** API keys, databases, Docker containers, or external cloud credentials.
   - `.gitignore` (`lines 17-19`) now ignores `.env` and `.env.*` while keeping `!.env.example` tracked.
-- [x] **Step 0.8 — Local Google Antigravity `/swarm` & repository `AGENTS.md` setup**:
-  - Repository-scoped rules in [`AGENTS.md`](./AGENTS.md) and global `/swarm` coordinator skills are active and verified.
-- [x] **Step 0.9 — Choose the right `.deb` artifact when testing local package installation**:
+- [x] **Step 0.8 — Choose the right `.deb` artifact when testing local package installation**:
   - **Cross-distro ABI note**: The in-repo `public/releases/snipclip_2.1.0_amd64.deb` (`59,992` B) was rebuilt on a `glibc 2.39` host (`GLIBC_2.38` symbol ceiling) and installs directly on Ubuntu 24.04+ / Debian 13+ / Zorin OS / Mint 22. For Debian 12 Bookworm (`glibc 2.36`) and Ubuntu 22.04 (`glibc 2.35`) release binaries, build inside `.github/workflows/release-deb.yml` (`debian:bookworm` container) or `docker run --rm -v "$PWD:/work" -w /work debian:bookworm bash ./scripts/build-deb.sh`.
 
 ---
