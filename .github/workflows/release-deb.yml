@@ -17,9 +17,9 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: "Semantic version for the .deb release (e.g., 2.0.0)"
+        description: "Semantic version for the .deb release (e.g., 2.1.0)"
         required: true
-        default: "2.0.0"
+        default: "2.1.0"
 
 permissions:
   contents: write

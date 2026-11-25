@@ -20,14 +20,20 @@ typedef struct {
     GtkWidget *new_btn;
     GtkWidget *mode_combo;
     GtkWidget *delay_combo;
+    GtkWidget *editor_actions_box;
+    GtkWidget *menu_btn;
+    GtkWidget *menu_popover;
+    GtkWidget *shortcut_btn;
+    GtkWidget *clear_snip_btn;
+    GtkWidget *annot_scroll;
     GtkWidget *tool_btns[10];
     GtkWidget *ruler_toggle;
     GtkWidget *color_btn;
     GtkWidget *width_scale;
-    GtkWidget *shortcut_btn;
     GtkWidget *undo_btn;
     GtkWidget *redo_btn;
     GtkWidget *crop_banner;
+    GtkWidget *status_bar;
     GtkWidget *status_session_lbl;
     GtkWidget *status_msg_lbl;
     GtkWidget *status_dims_lbl;
@@ -48,17 +54,22 @@ typedef struct {
 
 static const char *APP_CSS =
     "window { background-color: #f8fafc; color: #0f172a; }"
-    ".sc-cmd-bar { background-color: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 6px 10px; }"
-    ".sc-crop-bar { background-color: #eff6ff; border-bottom: 1px solid #bfdbfe; padding: 6px 12px; }"
-    ".sc-status-bar { background-color: #ffffff; border-top: 1px solid #e2e8f0; padding: 5px 12px; font-size: 12px; color: #475569; }"
-    "button.sc-primary-btn { background-image: none; background-color: #0f172a; color: #ffffff; border: 1px solid #0f172a; border-radius: 6px; padding: 5px 12px; font-weight: 700; }"
+    ".sc-cmd-bar { background-color: #ffffff; border-bottom: 1px solid #e2e8f0; padding: 4px 6px; }"
+    ".sc-cmd-bar combobox button, .sc-cmd-bar combobox button.combo { min-width: 0; min-height: 0; padding: 3px 5px; font-size: 12px; }"
+    ".sc-annot-bar { background-color: #f8fafc; border-bottom: 1px solid #e2e8f0; padding: 4px 8px; }"
+    ".sc-annot-bar viewport { background-image: none; background-color: transparent; border: none; }"
+    ".sc-crop-bar { background-color: #eff6ff; border-bottom: 1px solid #bfdbfe; padding: 5px 10px; }"
+    ".sc-status-bar { background-color: #ffffff; border-top: 1px solid #e2e8f0; padding: 4px 10px; font-size: 11.5px; color: #475569; }"
+    "button.sc-primary-btn { min-width: 0; min-height: 0; background-image: none; background-color: #0f172a; color: #ffffff; border: 1px solid #0f172a; border-radius: 6px; padding: 4px 8px; font-weight: 700; font-size: 12px; }"
     "button.sc-primary-btn:hover { background-color: #1e293b; }"
-    "button.sc-tool-btn { background-image: none; background-color: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px 9px; font-weight: 600; font-size: 12px; }"
+    "button.sc-tool-btn { min-width: 0; min-height: 0; background-image: none; background-color: #ffffff; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 6px; padding: 4px 6px; font-weight: 600; font-size: 12px; }"
     "button.sc-tool-btn:hover { background-color: #f1f5f9; }"
     "button.sc-tool-active { background-image: none; background-color: #dbeafe; color: #1d4ed8; border-color: #2563eb; }"
-    "button.sc-badge-btn { background-image: none; background-color: #f1f5f9; color: #0f172a; border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px 10px; font-family: monospace; font-size: 11px; font-weight: 700; }"
+    "button.sc-menu-item { min-width: 0; min-height: 0; background-image: none; background-color: transparent; color: #0f172a; border: none; border-radius: 5px; padding: 6px 10px; font-weight: 500; font-size: 12px; }"
+    "button.sc-menu-item:hover { background-color: #f1f5f9; }"
+    "button.sc-menu-item:disabled { color: #94a3b8; }"
     ".sc-overlay-bar { background-color: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 5px 6px; }"
-    "button.sc-overlay-btn { background-image: none; background-color: transparent; color: #e2e8f0; border: none; border-radius: 6px; padding: 6px 12px; font-weight: 600; font-size: 12px; }"
+    "button.sc-overlay-btn { min-width: 0; min-height: 0; background-image: none; background-color: transparent; color: #e2e8f0; border: none; border-radius: 6px; padding: 6px 12px; font-weight: 600; font-size: 12px; }"
     "button.sc-overlay-btn:hover { background-color: #334155; }"
     "button.sc-overlay-active { background-image: none; background-color: #2563eb; color: #ffffff; }";
 
@@ -67,7 +78,35 @@ static void app_set_status_message(ScApp *app, const char *msg) {
     gtk_label_set_text(GTK_LABEL(app->status_msg_lbl), msg ? msg : "");
 }
 
+static void query_monitor_workarea(GtkWidget *win, int *out_w, int *out_h) {
+    int ww = 0;
+    int wh = 0;
+    GdkDisplay *disp = gdk_display_get_default();
+    if (disp) {
+        GdkMonitor *mon = NULL;
+        GdkWindow *gdk_win = win ? gtk_widget_get_window(win) : NULL;
+        if (gdk_win) {
+            mon = gdk_display_get_monitor_at_window(disp, gdk_win);
+        }
+        if (!mon) {
+            mon = gdk_display_get_primary_monitor(disp);
+        }
+        if (!mon && gdk_display_get_n_monitors(disp) > 0) {
+            mon = gdk_display_get_monitor(disp, 0);
+        }
+        if (mon) {
+            GdkRectangle wa;
+            gdk_monitor_get_workarea(mon, &wa);
+            ww = wa.width;
+            wh = wa.height;
+        }
+    }
+    if (out_w) *out_w = ww;
+    if (out_h) *out_h = wh;
+}
+
 static void app_sync_tool_buttons(ScApp *app) {
+    if (!app || !app->editor) return;
     ScToolKind active = sc_editor_get_tool(app->editor);
     for (int i = 0; i < 10; ++i) {
         if (!app->tool_btns[i]) continue;
@@ -80,28 +119,70 @@ static void app_sync_tool_buttons(ScApp *app) {
     }
 }
 
+static void app_sync_window_mode(ScApp *app, bool resize_to_fit) {
+    if (!app || !app->editor || !app->window) return;
+    bool has_img = sc_editor_has_image(app->editor);
+
+    if (app->editor_actions_box) {
+        gtk_widget_set_visible(app->editor_actions_box, has_img);
+    }
+    if (app->annot_scroll) {
+        gtk_widget_set_visible(app->annot_scroll, has_img);
+    }
+    if (app->status_bar) {
+        gtk_widget_set_visible(app->status_bar, has_img);
+    }
+    if (app->crop_banner) {
+        gtk_widget_set_visible(app->crop_banner, has_img && sc_editor_is_crop_active(app->editor));
+    }
+    if (app->clear_snip_btn) {
+        gtk_widget_set_sensitive(app->clear_snip_btn, has_img);
+    }
+
+    if (resize_to_fit) {
+        int iw = 0, ih = 0;
+        if (has_img) {
+            sc_editor_get_dimensions(app->editor, &iw, &ih);
+        }
+        int ww = 0, wh = 0;
+        query_monitor_workarea(app->window, &ww, &wh);
+        int target_w = SC_LAUNCHER_WIDTH;
+        int target_h = SC_LAUNCHER_HEIGHT;
+        sc_compute_window_size(iw, ih, ww, wh, &target_w, &target_h);
+        gtk_window_resize(GTK_WINDOW(app->window), target_w, target_h);
+    }
+}
+
 static void on_editor_state_changed(void *user_data) {
     ScApp *app = (ScApp *)user_data;
     if (!app || !app->editor) return;
 
-    gtk_widget_set_sensitive(app->undo_btn, sc_editor_can_undo(app->editor));
-    gtk_widget_set_sensitive(app->redo_btn, sc_editor_can_redo(app->editor));
-    gtk_widget_set_visible(app->crop_banner, sc_editor_is_crop_active(app->editor));
+    if (app->undo_btn) {
+        gtk_widget_set_sensitive(app->undo_btn, sc_editor_can_undo(app->editor));
+    }
+    if (app->redo_btn) {
+        gtk_widget_set_sensitive(app->redo_btn, sc_editor_can_redo(app->editor));
+    }
+    app_sync_window_mode(app, false);
     app_sync_tool_buttons(app);
 
-    int w = 0, h = 0;
-    sc_editor_get_dimensions(app->editor, &w, &h);
-    if (w > 0 && h > 0) {
-        char dims[64];
-        snprintf(dims, sizeof(dims), "%d x %d px", w, h);
-        gtk_label_set_text(GTK_LABEL(app->status_dims_lbl), dims);
-    } else {
-        gtk_label_set_text(GTK_LABEL(app->status_dims_lbl), "No snip loaded");
+    if (app->status_dims_lbl) {
+        int w = 0, h = 0;
+        sc_editor_get_dimensions(app->editor, &w, &h);
+        if (w > 0 && h > 0) {
+            char dims[64];
+            snprintf(dims, sizeof(dims), "%d x %d px", w, h);
+            gtk_label_set_text(GTK_LABEL(app->status_dims_lbl), dims);
+        } else {
+            gtk_label_set_text(GTK_LABEL(app->status_dims_lbl), "No snip loaded");
+        }
     }
 
-    char zbuf[32];
-    snprintf(zbuf, sizeof(zbuf), "%d%%", (int)llround(sc_editor_get_zoom(app->editor) * 100.0));
-    gtk_label_set_text(GTK_LABEL(app->status_zoom_lbl), zbuf);
+    if (app->status_zoom_lbl) {
+        char zbuf[32];
+        snprintf(zbuf, sizeof(zbuf), "%d%%", (int)llround(sc_editor_get_zoom(app->editor) * 100.0));
+        gtk_label_set_text(GTK_LABEL(app->status_zoom_lbl), zbuf);
+    }
 }
 
 static bool parse_shortcut_accelerator(
@@ -162,8 +243,8 @@ static void on_snip_completed(GdkPixbuf *captured, ScSnipMode mode, void *user_d
         app_set_status_message(app, "Snip captured and copied to clipboard.");
     }
 
-    gtk_widget_show_all(app->window);
-    gtk_widget_set_visible(app->crop_banner, sc_editor_is_crop_active(app->editor));
+    app_sync_window_mode(app, true);
+    gtk_widget_show(app->window);
     gtk_window_present(GTK_WINDOW(app->window));
 }
 
@@ -171,8 +252,8 @@ static void on_snip_cancelled(void *user_data) {
     ScApp *app = (ScApp *)user_data;
     app->capture_in_progress = false;
     app_set_status_message(app, "Snip cancelled.");
-    gtk_widget_show_all(app->window);
-    gtk_widget_set_visible(app->crop_banner, sc_editor_is_crop_active(app->editor));
+    app_sync_window_mode(app, !sc_editor_has_image(app->editor));
+    gtk_widget_show(app->window);
     gtk_window_present(GTK_WINDOW(app->window));
 }
 
@@ -192,8 +273,8 @@ static gboolean perform_delayed_desktop_grab(gpointer user_data) {
     GdkPixbuf *desktop = sc_capture_desktop_pixbuf(&app->session, false, &ox, &oy);
     if (!desktop) {
         app->capture_in_progress = false;
-        gtk_widget_show_all(app->window);
-        gtk_widget_set_visible(app->crop_banner, sc_editor_is_crop_active(app->editor));
+        app_sync_window_mode(app, !sc_editor_has_image(app->editor));
+        gtk_widget_show(app->window);
         gtk_window_present(GTK_WINDOW(app->window));
 
         GtkWidget *dlg = gtk_message_dialog_new(
@@ -231,11 +312,12 @@ static gboolean perform_delayed_desktop_grab(gpointer user_data) {
 
 static void begin_capture_sequence(ScApp *app) {
     app->capture_in_progress = true;
+    bool was_visible = gtk_widget_get_visible(app->window);
     gtk_widget_hide(app->window);
     while (gtk_events_pending()) {
         gtk_main_iteration_do(FALSE);
     }
-    g_timeout_add(200, perform_delayed_desktop_grab, app);
+    g_timeout_add(was_visible ? 200 : 40, perform_delayed_desktop_grab, app);
 }
 
 static gboolean on_countdown_tick(gpointer user_data) {
@@ -249,7 +331,7 @@ static gboolean on_countdown_tick(gpointer user_data) {
     }
 
     char buf[48];
-    snprintf(buf, sizeof(buf), "Snipping in %ds...", app->countdown_remaining);
+    snprintf(buf, sizeof(buf), "Snip in %ds...", app->countdown_remaining);
     gtk_button_set_label(GTK_BUTTON(app->new_btn), buf);
     app->countdown_remaining--;
     return G_SOURCE_CONTINUE;
@@ -262,7 +344,7 @@ static void trigger_new_snip(ScApp *app) {
         app->countdown_remaining = app->delay_seconds - 1;
         gtk_widget_set_sensitive(app->new_btn, FALSE);
         char buf[48];
-        snprintf(buf, sizeof(buf), "Snipping in %ds...", app->delay_seconds);
+        snprintf(buf, sizeof(buf), "Snip in %ds...", app->delay_seconds);
         gtk_button_set_label(GTK_BUTTON(app->new_btn), buf);
         app->countdown_timer_id = g_timeout_add(1000, on_countdown_tick, app);
     } else {
@@ -331,6 +413,17 @@ static void on_clear_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     ScApp *app = (ScApp *)user_data;
     sc_editor_clear_ink(app->editor);
+}
+
+static void on_clear_snip_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    ScApp *app = (ScApp *)user_data;
+    if (app->menu_popover) {
+        gtk_popover_popdown(GTK_POPOVER(app->menu_popover));
+    }
+    sc_editor_reset_to_empty(app->editor);
+    app_set_status_message(app, "");
+    app_sync_window_mode(app, true);
 }
 
 static void on_apply_crop_clicked(GtkButton *btn, gpointer user_data) {
@@ -436,6 +529,7 @@ static void action_open_file(ScApp *app) {
             if (loaded) {
                 sc_editor_set_pixbuf(app->editor, loaded);
                 g_object_unref(loaded);
+                app_sync_window_mode(app, true);
                 app_set_status_message(app, "Opened image file.");
             }
             g_free(filename);
@@ -491,6 +585,9 @@ static gboolean on_record_shortcut_key(GtkWidget *widget, GdkEventKey *event, gp
 static void on_shortcut_btn_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     ScApp *app = (ScApp *)user_data;
+    if (app->menu_popover) {
+        gtk_popover_popdown(GTK_POPOVER(app->menu_popover));
+    }
 
     GtkWidget *dlg = gtk_dialog_new_with_buttons(
         "Customize Capture Shortcut",
@@ -531,9 +628,11 @@ static void on_shortcut_btn_clicked(GtkButton *btn, gpointer user_data) {
         );
         g_free(acc_lbl);
 
-        char btn_txt[80];
-        snprintf(btn_txt, sizeof(btn_txt), "Key: %s", app->custom_shortcut_label);
+        char btn_txt[96];
+        snprintf(btn_txt, sizeof(btn_txt), "Shortcut: %s...", app->custom_shortcut_label);
         gtk_button_set_label(GTK_BUTTON(app->shortcut_btn), btn_txt);
+        GtkWidget *child = gtk_bin_get_child(GTK_BIN(app->shortcut_btn));
+        if (child) gtk_widget_set_halign(child, GTK_ALIGN_START);
         app_set_status_message(app, "Updated custom capture shortcut.");
     }
     gtk_widget_destroy(dlg);
@@ -542,6 +641,9 @@ static void on_shortcut_btn_clicked(GtkButton *btn, gpointer user_data) {
 static void on_about_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     ScApp *app = (ScApp *)user_data;
+    if (app->menu_popover) {
+        gtk_popover_popdown(GTK_POPOVER(app->menu_popover));
+    }
 
     GtkWidget *dlg = gtk_message_dialog_new_with_markup(
         GTK_WINDOW(app->window),
@@ -634,12 +736,41 @@ static gboolean on_main_key_press(GtkWidget *widget, GdkEventKey *event, gpointe
     return FALSE;
 }
 
+static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
+    (void)widget;
+    (void)user_data;
+    if (gtk_main_level() > 0) {
+        gtk_main_quit();
+    }
+}
+
 static gboolean on_autostart_snip(gpointer user_data) {
     trigger_new_snip((ScApp *)user_data);
     return G_SOURCE_REMOVE;
 }
 
-static void build_main_window(ScApp *app, const char *initial_image_path, bool autostart) {
+static GtkWidget *make_popover_menu_btn(const char *label) {
+    GtkWidget *btn = gtk_button_new_with_label(label);
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "sc-menu-item");
+    GtkWidget *child = gtk_bin_get_child(GTK_BIN(btn));
+    if (child) {
+        gtk_widget_set_halign(child, GTK_ALIGN_START);
+    }
+    return btn;
+}
+
+static void hide_with_no_show_all(GtkWidget *w) {
+    gtk_widget_show_all(w);
+    gtk_widget_hide(w);
+    gtk_widget_set_no_show_all(w, TRUE);
+}
+
+static void build_main_window(
+    ScApp *app,
+    const char *initial_image_path,
+    bool autostart,
+    bool present_window
+) {
     GtkCssProvider *css = gtk_css_provider_new();
     gtk_css_provider_load_from_data(css, APP_CSS, -1, NULL);
     gtk_style_context_add_provider_for_screen(
@@ -650,24 +781,26 @@ static void build_main_window(ScApp *app, const char *initial_image_path, bool a
     g_object_unref(css);
 
     app->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_default_size(GTK_WINDOW(app->window), 1120, 720);
+    app->editor = sc_editor_canvas_new(on_editor_state_changed, app);
 
     const char *proto_upper = app->session.protocol == SC_PROTO_WAYLAND
                                   ? "WAYLAND"
                                   : (app->session.protocol == SC_PROTO_X11 ? "X11" : "HEADLESS");
     char title[128];
-    snprintf(title, sizeof(title), "SnipClip v%s — %s Auto-Detected", SNIPCLIP_VERSION, proto_upper);
+    snprintf(title, sizeof(title), "SnipClip v%s \xe2\x80\x94 %s", SNIPCLIP_VERSION, proto_upper);
     gtk_window_set_title(GTK_WINDOW(app->window), title);
     gtk_window_set_icon_name(GTK_WINDOW(app->window), "snipclip");
     if (g_file_test("/usr/share/snipclip/snipclip.png", G_FILE_TEST_EXISTS)) {
         gtk_window_set_icon_from_file(GTK_WINDOW(app->window), "/usr/share/snipclip/snipclip.png", NULL);
+    } else if (g_file_test("/usr/share/pixmaps/snipclip.png", G_FILE_TEST_EXISTS)) {
+        gtk_window_set_icon_from_file(GTK_WINDOW(app->window), "/usr/share/pixmaps/snipclip.png", NULL);
     }
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(app->window), vbox);
 
-    /* Top Command Bar */
-    GtkWidget *cmd_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    /* Row 1: Compact Microsoft Snipping Tool Top Bar */
+    GtkWidget *cmd_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
     gtk_style_context_add_class(gtk_widget_get_style_context(cmd_bar), "sc-cmd-bar");
     gtk_box_pack_start(GTK_BOX(vbox), cmd_bar, FALSE, FALSE, 0);
 
@@ -682,15 +815,17 @@ static void build_main_window(ScApp *app, const char *initial_image_path, bool a
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->mode_combo), "window", "Window");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->mode_combo), "fullscreen", "Fullscreen");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->mode_combo), "freeform", "Freeform");
+    gtk_widget_set_tooltip_text(app->mode_combo, "Snipping mode");
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(app->mode_combo), sc_snip_mode_to_string(app->snip_mode));
     g_signal_connect(app->mode_combo, "changed", G_CALLBACK(on_mode_changed), app);
     gtk_box_pack_start(GTK_BOX(cmd_bar), app->mode_combo, FALSE, FALSE, 0);
 
     app->delay_combo = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->delay_combo), "0", "No delay");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->delay_combo), "3", "3s delay");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->delay_combo), "5", "5s delay");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->delay_combo), "10", "10s delay");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->delay_combo), "3", "3s");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->delay_combo), "5", "5s");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(app->delay_combo), "10", "10s");
+    gtk_widget_set_tooltip_text(app->delay_combo, "Delay before capture");
     char delay_id[16];
     snprintf(delay_id, sizeof(delay_id), "%d", app->delay_seconds);
     if (!gtk_combo_box_set_active_id(GTK_COMBO_BOX(app->delay_combo), delay_id)) {
@@ -699,8 +834,101 @@ static void build_main_window(ScApp *app, const char *initial_image_path, bool a
     g_signal_connect(app->delay_combo, "changed", G_CALLBACK(on_delay_changed), app);
     gtk_box_pack_start(GTK_BOX(cmd_bar), app->delay_combo, FALSE, FALSE, 0);
 
-    gtk_box_pack_start(GTK_BOX(cmd_bar), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 3);
+    /* Expanding spacer */
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_box_pack_start(GTK_BOX(cmd_bar), spacer, TRUE, TRUE, 0);
 
+    /* Editor-only quick actions: Undo, Redo | Copy, Save */
+    app->editor_actions_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+    gtk_box_pack_start(GTK_BOX(cmd_bar), app->editor_actions_box, FALSE, FALSE, 0);
+
+    app->undo_btn = gtk_button_new_with_label("Undo");
+    gtk_style_context_add_class(gtk_widget_get_style_context(app->undo_btn), "sc-tool-btn");
+    gtk_widget_set_tooltip_text(app->undo_btn, "Undo annotation (Ctrl+Z)");
+    gtk_widget_set_sensitive(app->undo_btn, FALSE);
+    g_signal_connect(app->undo_btn, "clicked", G_CALLBACK(on_undo_clicked), app);
+    gtk_box_pack_start(GTK_BOX(app->editor_actions_box), app->undo_btn, FALSE, FALSE, 0);
+
+    app->redo_btn = gtk_button_new_with_label("Redo");
+    gtk_style_context_add_class(gtk_widget_get_style_context(app->redo_btn), "sc-tool-btn");
+    gtk_widget_set_tooltip_text(app->redo_btn, "Redo annotation (Ctrl+Y)");
+    gtk_widget_set_sensitive(app->redo_btn, FALSE);
+    g_signal_connect(app->redo_btn, "clicked", G_CALLBACK(on_redo_clicked), app);
+    gtk_box_pack_start(GTK_BOX(app->editor_actions_box), app->redo_btn, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(
+        GTK_BOX(app->editor_actions_box),
+        gtk_separator_new(GTK_ORIENTATION_VERTICAL),
+        FALSE,
+        FALSE,
+        1
+    );
+
+    GtkWidget *copy_btn = gtk_button_new_with_label("Copy");
+    gtk_style_context_add_class(gtk_widget_get_style_context(copy_btn), "sc-tool-btn");
+    gtk_widget_set_tooltip_text(copy_btn, "Copy snip to clipboard (Ctrl+C)");
+    g_signal_connect(copy_btn, "clicked", G_CALLBACK(on_copy_clicked), app);
+    gtk_box_pack_start(GTK_BOX(app->editor_actions_box), copy_btn, FALSE, FALSE, 0);
+
+    GtkWidget *save_btn = gtk_button_new_with_label("Save");
+    gtk_style_context_add_class(gtk_widget_get_style_context(save_btn), "sc-tool-btn");
+    gtk_widget_set_tooltip_text(save_btn, "Save snip as PNG/JPEG (Ctrl+S)");
+    g_signal_connect(save_btn, "clicked", G_CALLBACK(on_save_clicked), app);
+    gtk_box_pack_start(GTK_BOX(app->editor_actions_box), save_btn, FALSE, FALSE, 0);
+
+    hide_with_no_show_all(app->editor_actions_box);
+
+    /* Always-visible right-side compact actions: Open & Overflow Menu */
+    GtkWidget *open_btn = gtk_button_new_with_label("Open");
+    gtk_style_context_add_class(gtk_widget_get_style_context(open_btn), "sc-tool-btn");
+    gtk_widget_set_tooltip_text(open_btn, "Open image file (Ctrl+O)");
+    g_signal_connect(open_btn, "clicked", G_CALLBACK(on_open_clicked), app);
+    gtk_box_pack_start(GTK_BOX(cmd_bar), open_btn, FALSE, FALSE, 0);
+
+    app->menu_btn = gtk_menu_button_new();
+    gtk_button_set_label(GTK_BUTTON(app->menu_btn), "\xe2\x8b\xaf");
+    gtk_style_context_add_class(gtk_widget_get_style_context(app->menu_btn), "sc-tool-btn");
+    gtk_widget_set_tooltip_text(app->menu_btn, "Settings, shortcut & display diagnostics");
+    gtk_box_pack_start(GTK_BOX(cmd_bar), app->menu_btn, FALSE, FALSE, 0);
+
+    app->menu_popover = gtk_popover_new(app->menu_btn);
+    gtk_menu_button_set_popover(GTK_MENU_BUTTON(app->menu_btn), app->menu_popover);
+
+    GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_container_set_border_width(GTK_CONTAINER(menu_box), 6);
+    gtk_container_add(GTK_CONTAINER(app->menu_popover), menu_box);
+
+    char sc_txt[96];
+    snprintf(sc_txt, sizeof(sc_txt), "Shortcut: %s...", app->custom_shortcut_label);
+    app->shortcut_btn = make_popover_menu_btn(sc_txt);
+    g_signal_connect(app->shortcut_btn, "clicked", G_CALLBACK(on_shortcut_btn_clicked), app);
+    gtk_box_pack_start(GTK_BOX(menu_box), app->shortcut_btn, FALSE, FALSE, 0);
+
+    app->clear_snip_btn = make_popover_menu_btn("Close Current Snip");
+    gtk_widget_set_sensitive(app->clear_snip_btn, FALSE);
+    g_signal_connect(app->clear_snip_btn, "clicked", G_CALLBACK(on_clear_snip_clicked), app);
+    gtk_box_pack_start(GTK_BOX(menu_box), app->clear_snip_btn, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(menu_box), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
+
+    char badge_txt[96];
+    snprintf(badge_txt, sizeof(badge_txt), "Display & Version (%s \xc2\xb7 v%s)", proto_upper, SNIPCLIP_VERSION);
+    GtkWidget *about_btn = make_popover_menu_btn(badge_txt);
+    g_signal_connect(about_btn, "clicked", G_CALLBACK(on_about_clicked), app);
+    gtk_box_pack_start(GTK_BOX(menu_box), about_btn, FALSE, FALSE, 0);
+    gtk_widget_show_all(menu_box);
+
+    /* Row 2: Horizontally Scrollable Annotation Strip (editor mode only) */
+    app->annot_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(
+        GTK_SCROLLED_WINDOW(app->annot_scroll),
+        GTK_POLICY_AUTOMATIC,
+        GTK_POLICY_NEVER
+    );
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(app->annot_scroll), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(app->annot_scroll), "sc-annot-bar");
+
+    GtkWidget *annot_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     const struct { ScToolKind kind; const char *label; } tools[] = {
         { SC_TOOL_PEN, "Pen" },
         { SC_TOOL_HIGHLIGHTER, "Highlight" },
@@ -718,88 +946,52 @@ static void build_main_window(ScApp *app, const char *initial_image_path, bool a
         gtk_style_context_add_class(gtk_widget_get_style_context(b), "sc-tool-btn");
         g_object_set_data(G_OBJECT(b), "sc-tool", GINT_TO_POINTER((int)tools[i].kind));
         g_signal_connect(b, "clicked", G_CALLBACK(on_tool_clicked), app);
-        gtk_box_pack_start(GTK_BOX(cmd_bar), b, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(annot_bar), b, FALSE, FALSE, 0);
         app->tool_btns[tools[i].kind] = b;
     }
+
+    gtk_box_pack_start(GTK_BOX(annot_bar), gtk_separator_new(GTK_ORIENTATION_VERTICAL), FALSE, FALSE, 3);
 
     app->ruler_toggle = gtk_toggle_button_new_with_label("Ruler");
     gtk_style_context_add_class(gtk_widget_get_style_context(app->ruler_toggle), "sc-tool-btn");
     g_signal_connect(app->ruler_toggle, "toggled", G_CALLBACK(on_ruler_toggled), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), app->ruler_toggle, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(annot_bar), app->ruler_toggle, FALSE, FALSE, 0);
 
     GdkRGBA init_col;
     gdk_rgba_parse(&init_col, "#ef4444");
     app->color_btn = gtk_color_button_new_with_rgba(&init_col);
     gtk_widget_set_tooltip_text(app->color_btn, "Select ink / shape color");
     g_signal_connect(app->color_btn, "color-set", G_CALLBACK(on_color_set), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), app->color_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(annot_bar), app->color_btn, FALSE, FALSE, 0);
 
     app->width_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 1.0, 16.0, 1.0);
     gtk_scale_set_draw_value(GTK_SCALE(app->width_scale), FALSE);
     gtk_range_set_value(GTK_RANGE(app->width_scale), 3.0);
-    gtk_widget_set_size_request(app->width_scale, 68, -1);
+    gtk_widget_set_size_request(app->width_scale, 60, -1);
     gtk_widget_set_tooltip_text(app->width_scale, "Stroke thickness");
     g_signal_connect(app->width_scale, "value-changed", G_CALLBACK(on_width_changed), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), app->width_scale, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(annot_bar), app->width_scale, FALSE, FALSE, 0);
 
-    char sc_txt[80];
-    snprintf(sc_txt, sizeof(sc_txt), "Key: %s", app->custom_shortcut_label);
-    app->shortcut_btn = gtk_button_new_with_label(sc_txt);
-    gtk_style_context_add_class(gtk_widget_get_style_context(app->shortcut_btn), "sc-tool-btn");
-    gtk_widget_set_tooltip_text(app->shortcut_btn, "Configure PrintScreen / custom capture shortcut");
-    g_signal_connect(app->shortcut_btn, "clicked", G_CALLBACK(on_shortcut_btn_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), app->shortcut_btn, FALSE, FALSE, 0);
-
-    /* Right-aligned Undo / Redo / Export / Display Badge */
-    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), spacer, TRUE, TRUE, 0);
-
-    app->undo_btn = gtk_button_new_with_label("Undo");
-    gtk_style_context_add_class(gtk_widget_get_style_context(app->undo_btn), "sc-tool-btn");
-    gtk_widget_set_sensitive(app->undo_btn, FALSE);
-    g_signal_connect(app->undo_btn, "clicked", G_CALLBACK(on_undo_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), app->undo_btn, FALSE, FALSE, 0);
-
-    app->redo_btn = gtk_button_new_with_label("Redo");
-    gtk_style_context_add_class(gtk_widget_get_style_context(app->redo_btn), "sc-tool-btn");
-    gtk_widget_set_sensitive(app->redo_btn, FALSE);
-    g_signal_connect(app->redo_btn, "clicked", G_CALLBACK(on_redo_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), app->redo_btn, FALSE, FALSE, 0);
-
-    GtkWidget *clear_btn = gtk_button_new_with_label("Clear");
+    GtkWidget *clear_btn = gtk_button_new_with_label("Clear Ink");
     gtk_style_context_add_class(gtk_widget_get_style_context(clear_btn), "sc-tool-btn");
     g_signal_connect(clear_btn, "clicked", G_CALLBACK(on_clear_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), clear_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(annot_bar), clear_btn, FALSE, FALSE, 0);
 
-    GtkWidget *copy_btn = gtk_button_new_with_label("Copy");
-    gtk_style_context_add_class(gtk_widget_get_style_context(copy_btn), "sc-tool-btn");
-    g_signal_connect(copy_btn, "clicked", G_CALLBACK(on_copy_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), copy_btn, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(app->annot_scroll), annot_bar);
+    GtkWidget *annot_vp = gtk_bin_get_child(GTK_BIN(app->annot_scroll));
+    if (GTK_IS_VIEWPORT(annot_vp)) {
+        gtk_viewport_set_shadow_type(GTK_VIEWPORT(annot_vp), GTK_SHADOW_NONE);
+    }
+    gtk_box_pack_start(GTK_BOX(vbox), app->annot_scroll, FALSE, FALSE, 0);
+    hide_with_no_show_all(app->annot_scroll);
 
-    GtkWidget *save_btn = gtk_button_new_with_label("Save");
-    gtk_style_context_add_class(gtk_widget_get_style_context(save_btn), "sc-tool-btn");
-    g_signal_connect(save_btn, "clicked", G_CALLBACK(on_save_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), save_btn, FALSE, FALSE, 0);
-
-    GtkWidget *open_btn = gtk_button_new_with_label("Open");
-    gtk_style_context_add_class(gtk_widget_get_style_context(open_btn), "sc-tool-btn");
-    g_signal_connect(open_btn, "clicked", G_CALLBACK(on_open_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), open_btn, FALSE, FALSE, 0);
-
-    char badge_txt[64];
-    snprintf(badge_txt, sizeof(badge_txt), "%s · v%s", proto_upper, SNIPCLIP_VERSION);
-    GtkWidget *about_btn = gtk_button_new_with_label(badge_txt);
-    gtk_style_context_add_class(gtk_widget_get_style_context(about_btn), "sc-badge-btn");
-    gtk_widget_set_tooltip_text(about_btn, "Auto-detected display server & version details");
-    g_signal_connect(about_btn, "clicked", G_CALLBACK(on_about_clicked), app);
-    gtk_box_pack_start(GTK_BOX(cmd_bar), about_btn, FALSE, FALSE, 0);
-
-    /* Interactive Crop Banner */
+    /* Row 3: Interactive Crop Banner */
     app->crop_banner = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_style_context_add_class(gtk_widget_get_style_context(app->crop_banner), "sc-crop-bar");
     GtkWidget *crop_lbl = gtk_label_new("Drag on the canvas to adjust the crop region.");
-    gtk_box_pack_start(GTK_BOX(app->crop_banner), crop_lbl, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(app->crop_banner), gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0), TRUE, TRUE, 0);
+    gtk_label_set_ellipsize(GTK_LABEL(crop_lbl), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(crop_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(app->crop_banner), crop_lbl, TRUE, TRUE, 0);
 
     GtkWidget *apply_crop_btn = gtk_button_new_with_label("Apply Crop");
     gtk_style_context_add_class(gtk_widget_get_style_context(apply_crop_btn), "sc-primary-btn");
@@ -811,43 +1003,49 @@ static void build_main_window(ScApp *app, const char *initial_image_path, bool a
     g_signal_connect(cancel_crop_btn, "clicked", G_CALLBACK(on_cancel_crop_clicked), app);
     gtk_box_pack_start(GTK_BOX(app->crop_banner), cancel_crop_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), app->crop_banner, FALSE, FALSE, 0);
+    hide_with_no_show_all(app->crop_banner);
 
-    /* Scrollable Editor Canvas */
-    app->editor = sc_editor_canvas_new(on_editor_state_changed, app);
+    /* Row 4: Scrollable Editor Canvas */
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(scroll), sc_editor_canvas_widget(app->editor));
     gtk_box_pack_start(GTK_BOX(vbox), scroll, TRUE, TRUE, 0);
 
-    /* Bottom Status Bar */
-    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
-    gtk_style_context_add_class(gtk_widget_get_style_context(status_bar), "sc-status-bar");
+    /* Row 5: Bottom Status Bar (editor mode only) */
+    app->status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    gtk_style_context_add_class(gtk_widget_get_style_context(app->status_bar), "sc-status-bar");
     char sess_summary[512];
     snprintf(
         sess_summary,
         sizeof(sess_summary),
-        "Auto-detected: %s (%s) · %s · %s",
+        "%s (%s) \xc2\xb7 %s",
         proto_upper,
         app->session.detection_source,
-        app->session.desktop_environment,
-        app->session.capture_driver
+        app->session.desktop_environment
     );
     app->status_session_lbl = gtk_label_new(sess_summary);
     gtk_label_set_ellipsize(GTK_LABEL(app->status_session_lbl), PANGO_ELLIPSIZE_END);
-    gtk_box_pack_start(GTK_BOX(status_bar), app->status_session_lbl, FALSE, TRUE, 0);
+    gtk_label_set_xalign(GTK_LABEL(app->status_session_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(app->status_bar), app->status_session_lbl, TRUE, TRUE, 0);
 
     app->status_msg_lbl = gtk_label_new("");
-    gtk_box_pack_start(GTK_BOX(status_bar), app->status_msg_lbl, TRUE, TRUE, 0);
+    gtk_label_set_ellipsize(GTK_LABEL(app->status_msg_lbl), PANGO_ELLIPSIZE_END);
+    gtk_label_set_xalign(GTK_LABEL(app->status_msg_lbl), 0.0f);
+    gtk_box_pack_start(GTK_BOX(app->status_bar), app->status_msg_lbl, TRUE, TRUE, 0);
 
     app->status_dims_lbl = gtk_label_new("No snip loaded");
-    gtk_box_pack_end(GTK_BOX(status_bar), app->status_dims_lbl, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(app->status_bar), app->status_dims_lbl, FALSE, FALSE, 0);
 
     app->status_zoom_lbl = gtk_label_new("100%");
-    gtk_box_pack_end(GTK_BOX(status_bar), app->status_zoom_lbl, FALSE, FALSE, 8);
-    gtk_box_pack_start(GTK_BOX(vbox), status_bar, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(app->status_bar), app->status_zoom_lbl, FALSE, FALSE, 6);
+    gtk_box_pack_start(GTK_BOX(vbox), app->status_bar, FALSE, FALSE, 0);
+    hide_with_no_show_all(app->status_bar);
 
-    g_signal_connect(app->window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    g_signal_connect(app->window, "destroy", G_CALLBACK(on_window_destroy), NULL);
     g_signal_connect(app->window, "key-press-event", G_CALLBACK(on_main_key_press), app);
+
+    /* Make permanent layout children visible without overriding no_show_all subtrees */
+    gtk_widget_show_all(vbox);
 
     if (initial_image_path && initial_image_path[0] != '\0') {
         GdkPixbuf *loaded = gdk_pixbuf_new_from_file(initial_image_path, NULL);
@@ -857,13 +1055,34 @@ static void build_main_window(ScApp *app, const char *initial_image_path, bool a
         }
     }
 
+    int iw = 0, ih = 0;
+    if (sc_editor_has_image(app->editor)) {
+        sc_editor_get_dimensions(app->editor, &iw, &ih);
+    }
+    int ww = 0, wh = 0;
+    query_monitor_workarea(app->window, &ww, &wh);
+    int init_w = SC_LAUNCHER_WIDTH;
+    int init_h = SC_LAUNCHER_HEIGHT;
+    sc_compute_window_size(iw, ih, ww, wh, &init_w, &init_h);
+    gtk_window_set_default_size(GTK_WINDOW(app->window), init_w, init_h);
+    gtk_window_set_position(GTK_WINDOW(app->window), GTK_WIN_POS_CENTER);
+
     app_sync_tool_buttons(app);
-    gtk_widget_show_all(app->window);
-    gtk_widget_set_visible(app->crop_banner, FALSE);
-    gtk_window_present(GTK_WINDOW(app->window));
+    app_sync_window_mode(app, false);
+
+    if (!present_window) {
+        return;
+    }
 
     if (autostart) {
-        g_timeout_add(220, on_autostart_snip, app);
+        if (app->delay_seconds > 0) {
+            gtk_widget_show(app->window);
+            gtk_window_present(GTK_WINDOW(app->window));
+        }
+        g_idle_add(on_autostart_snip, app);
+    } else {
+        gtk_widget_show(app->window);
+        gtk_window_present(GTK_WINDOW(app->window));
     }
 }
 
@@ -875,6 +1094,7 @@ static void print_help(void) {
         "  -h, --help             Show this help message and exit\n"
         "  -v, --version          Print SnipClip version matching the GitHub .deb release\n"
         "  --detect-display       Print auto-detected X11 or Wayland display details as JSON\n"
+        "  --print-ui-metrics     Print launcher and editor GTK window size metrics as JSON\n"
         "  -m, --mode MODE        Initial snip mode: rectangle, window, fullscreen, freeform\n"
         "  -d, --delay SECONDS    Delay before capture: 0, 3, 5, or 10\n"
         "  --capture-now          Immediately begin capture on launch\n"
@@ -892,6 +1112,7 @@ int main(int argc, char **argv) {
     bool want_version = false;
     bool want_help = false;
     bool want_detect_json = false;
+    bool want_ui_metrics = false;
     char shortcut_spec[64] = "Ctrl+Shift+S";
     char initial_image[1024] = "";
 
@@ -906,6 +1127,8 @@ int main(int argc, char **argv) {
             want_help = true;
         } else if (strcmp(arg, "--detect-display") == 0) {
             want_detect_json = true;
+        } else if (strcmp(arg, "--print-ui-metrics") == 0) {
+            want_ui_metrics = true;
         } else if (strcmp(arg, "--capture-now") == 0) {
             autostart_snip = true;
         } else if ((strcmp(arg, "-m") == 0 || strcmp(arg, "--mode") == 0) && i + 1 < argc) {
@@ -988,7 +1211,41 @@ int main(int argc, char **argv) {
         );
     }
 
-    build_main_window(&app, initial_image, autostart_snip);
+    if (want_ui_metrics) {
+        build_main_window(&app, "", false, false);
+        int def_w = 0, def_h = 0;
+        gtk_window_get_default_size(GTK_WINDOW(app.window), &def_w, &def_h);
+
+        int launcher_min_w = 0, launcher_nat_w = 0;
+        int launcher_min_h = 0, launcher_nat_h = 0;
+        gtk_widget_get_preferred_width(app.window, &launcher_min_w, &launcher_nat_w);
+        gtk_widget_get_preferred_height(app.window, &launcher_min_h, &launcher_nat_h);
+        (void)launcher_min_h;
+        (void)launcher_nat_h;
+
+        GdkPixbuf *dummy = gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, 640, 400);
+        sc_editor_set_pixbuf(app.editor, dummy);
+        g_object_unref(dummy);
+        app_sync_window_mode(&app, true);
+
+        int editor_min_w = 0, editor_nat_w = 0;
+        gtk_widget_get_preferred_width(app.window, &editor_min_w, &editor_nat_w);
+
+        printf(
+            "{\"launcher_default_w\":%d,\"launcher_default_h\":%d,\"launcher_min_w\":%d,\"launcher_nat_w\":%d,\"editor_min_w\":%d}\n",
+            def_w,
+            def_h,
+            launcher_min_w,
+            launcher_nat_w,
+            editor_min_w
+        );
+
+        gtk_widget_destroy(app.window);
+        sc_editor_canvas_free(app.editor);
+        return 0;
+    }
+
+    build_main_window(&app, initial_image, autostart_snip, true);
     gtk_main();
 
     sc_editor_canvas_free(app.editor);

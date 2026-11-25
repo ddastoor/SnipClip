@@ -13,6 +13,7 @@ import {
   Highlighter,
   Keyboard,
   Minus,
+  MoreHorizontal,
   PenTool,
   Plus,
   Redo2,
@@ -22,6 +23,7 @@ import {
   Square,
   Trash2,
   Undo2,
+  X,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
@@ -29,6 +31,7 @@ import {
   AnnotationOperation,
   AnnotationTool,
   computePolygonBounds,
+  computeSnipWindowDimensions,
   DEFAULT_CUSTOM_SHORTCUT,
   DetectedSessionResult,
   evaluateCaptureShortcut,
@@ -37,6 +40,8 @@ import {
   hitTestAnnotation,
   isEditableElement,
   isPrintScreenKey,
+  LAUNCHER_WINDOW_HEIGHT,
+  LAUNCHER_WINDOW_WIDTH,
   normalizeRect,
   parseShortcutString,
   Point2D,
@@ -258,6 +263,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
   });
   const [isRecordingShortcut, setIsRecordingShortcut] = useState<boolean>(false);
   const [shortcutError, setShortcutError] = useState<string | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const lastPrintScreenKeyDownAtRef = useRef<number>(0);
 
   // Capture overlay interaction state
@@ -269,6 +275,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
   const editorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const settingsContainerRef = useRef<HTMLDivElement | null>(null);
 
   const simulatedDesktop = useMemo(() => {
     return renderSimulatedDebianDesktop(
@@ -286,20 +293,57 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     );
   }, [sessionInfo.protocol, sessionInfo.detectionSource, sessionInfo.captureDriver]);
 
-  // Initialize with a default window capture on first mount
+  // Close shortcut settings popover when clicking outside
   useEffect(() => {
-    if (!baseCanvas) {
-      const termWin = SIMULATED_WINDOWS[0];
-      const initial = extractSubCanvas(
-        simulatedDesktop,
-        termWin.x,
-        termWin.y,
-        termWin.width,
-        termWin.height
-      );
-      setBaseCanvas(initial);
-    }
-  }, [baseCanvas, simulatedDesktop]);
+    if (!isSettingsOpen) return;
+    const onPointerDownOutside = (e: MouseEvent) => {
+      if (
+        settingsContainerRef.current &&
+        !settingsContainerRef.current.contains(e.target as Node)
+      ) {
+        setIsSettingsOpen(false);
+        setIsRecordingShortcut(false);
+        setShortcutError(null);
+      }
+    };
+    window.addEventListener('mousedown', onPointerDownOutside);
+    return () => window.removeEventListener('mousedown', onPointerDownOutside);
+  }, [isSettingsOpen]);
+
+  const handleLoadSampleWindow = useCallback(() => {
+    const termWin = SIMULATED_WINDOWS[0];
+    const sample = extractSubCanvas(
+      simulatedDesktop,
+      termWin.x,
+      termWin.y,
+      termWin.width,
+      termWin.height
+    );
+    setBaseCanvas(sample);
+    setAnnotations([]);
+    setActiveOp(null);
+    setUndoStack([]);
+    setRedoStack([]);
+    setCropRect(null);
+    setZoom(1);
+    setIsSettingsOpen(false);
+    setStatusMessage(
+      `Loaded sample window snip "${termWin.title}" (${termWin.width} × ${termWin.height} px).`
+    );
+  }, [simulatedDesktop]);
+
+  const handleResetToLauncher = useCallback(() => {
+    setBaseCanvas(null);
+    setAnnotations([]);
+    setActiveOp(null);
+    setUndoStack([]);
+    setRedoStack([]);
+    setCropRect(null);
+    setZoom(1);
+    setIsCapturing(false);
+    setIsSettingsOpen(false);
+    setStatusMessage('Closed snip — ready in compact launcher mode.');
+  }, []);
 
   // Keep ruler centered and proportioned inside newly captured or cropped canvases
   useEffect(() => {
@@ -429,6 +473,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
         return;
       }
 
+      setIsSettingsOpen(false);
       setIsCapturing(true);
       setStatusMessage(
         `Snipping active${viaSuffix} (${snipMode} mode) — select an area on the Debian desktop.`
@@ -437,7 +482,55 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     [delaySeconds, snipMode, simulatedDesktop]
   );
 
-  // Keyboard shortcuts (PrintScreen, custom capture combination, recorder, Ctrl+Z, Ctrl+Y, Escape)
+  const buildFlattenedCanvas = useCallback((): HTMLCanvasElement | null => {
+    if (!baseCanvas) return null;
+    const flat = cloneCanvas(baseCanvas);
+    const ctx = flat.getContext('2d');
+    if (!ctx) return flat;
+    for (const op of annotations) {
+      drawAnnotationOnContext(ctx, op, flat);
+    }
+    return flat;
+  }, [baseCanvas, annotations]);
+
+  const handleCopySnip = useCallback(async () => {
+    const flat = buildFlattenedCanvas();
+    if (!flat) return;
+
+    let copiedViaClipboardApi = false;
+    try {
+      const blob = await new Promise<Blob | null>((resolve) => flat.toBlob(resolve, 'image/png'));
+      if (blob && navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        copiedViaClipboardApi = true;
+      }
+    } catch {
+      copiedViaClipboardApi = false;
+    }
+
+    setCopyFeedback(true);
+    window.setTimeout(() => setCopyFeedback(false), 2000);
+    setStatusMessage(
+      copiedViaClipboardApi
+        ? `Copied PNG (${flat.width} × ${flat.height} px) via ${sessionInfo.clipboardDriver}.`
+        : `Prepared PNG buffer (${flat.width} × ${flat.height} px) for ${sessionInfo.clipboardDriver}.`
+    );
+  }, [buildFlattenedCanvas, sessionInfo.clipboardDriver]);
+
+  const handleSavePng = useCallback(() => {
+    const flat = buildFlattenedCanvas();
+    if (!flat) return;
+    const url = flat.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `snipclip-${version}-${flat.width}x${flat.height}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setStatusMessage(`Saved snipclip-${version}-${flat.width}x${flat.height}.png.`);
+  }, [buildFlattenedCanvas, version]);
+
+  // Keyboard shortcuts (PrintScreen, custom capture combination, recorder, Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+S, Escape)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (isRecordingShortcut) {
@@ -481,6 +574,9 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
         } else if (countdownLeft !== null) {
           setCountdownLeft(null);
           setStatusMessage('Delayed snip cancelled.');
+        } else if (isSettingsOpen) {
+          setIsSettingsOpen(false);
+          setShortcutError(null);
         } else if (tool === AnnotationTool.Crop) {
           setTool(AnnotationTool.Pen);
           setCropRect(null);
@@ -521,6 +617,27 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
       ) {
         e.preventDefault();
         handleRedo();
+      } else if (
+        baseCanvas &&
+        !isCapturing &&
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === 'c' &&
+        !window.getSelection()?.toString()
+      ) {
+        e.preventDefault();
+        void handleCopySnip();
+      } else if (
+        baseCanvas &&
+        !isCapturing &&
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === 's'
+      ) {
+        e.preventDefault();
+        handleSavePng();
       }
     };
 
@@ -554,24 +671,17 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     isRecordingShortcut,
     isCapturing,
     countdownLeft,
+    isSettingsOpen,
     tool,
     printScreenEnabled,
     customShortcut,
+    baseCanvas,
     triggerSnipCapture,
     handleUndo,
     handleRedo,
+    handleCopySnip,
+    handleSavePng,
   ]);
-
-  const buildFlattenedCanvas = useCallback((): HTMLCanvasElement | null => {
-    if (!baseCanvas) return null;
-    const flat = cloneCanvas(baseCanvas);
-    const ctx = flat.getContext('2d');
-    if (!ctx) return flat;
-    for (const op of annotations) {
-      drawAnnotationOnContext(ctx, op, flat);
-    }
-    return flat;
-  }, [baseCanvas, annotations]);
 
   // Render the main annotation editor canvas whenever state changes
   useEffect(() => {
@@ -1074,43 +1184,6 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
     setStatusMessage('Cleared all annotations.');
   };
 
-  const handleCopySnip = async () => {
-    const flat = buildFlattenedCanvas();
-    if (!flat) return;
-
-    let copiedViaClipboardApi = false;
-    try {
-      const blob = await new Promise<Blob | null>((resolve) => flat.toBlob(resolve, 'image/png'));
-      if (blob && navigator.clipboard && typeof ClipboardItem !== 'undefined') {
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-        copiedViaClipboardApi = true;
-      }
-    } catch {
-      copiedViaClipboardApi = false;
-    }
-
-    setCopyFeedback(true);
-    window.setTimeout(() => setCopyFeedback(false), 2000);
-    setStatusMessage(
-      copiedViaClipboardApi
-        ? `Copied PNG (${flat.width} × ${flat.height} px) via ${sessionInfo.clipboardDriver}.`
-        : `Prepared PNG buffer (${flat.width} × ${flat.height} px) for ${sessionInfo.clipboardDriver}.`
-    );
-  };
-
-  const handleSavePng = () => {
-    const flat = buildFlattenedCanvas();
-    if (!flat) return;
-    const url = flat.toDataURL('image/png');
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `snipclip-${version}-${flat.width}x${flat.height}.png`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setStatusMessage(`Saved snipclip-${version}-${flat.width}x${flat.height}.png.`);
-  };
-
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1130,6 +1203,7 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
           setRedoStack([]);
           setCropRect(null);
           setZoom(1);
+          setIsSettingsOpen(false);
           setStatusMessage(`Opened ${file.name} (${c.width} × ${c.height} px).`);
         }
       };
@@ -1141,10 +1215,176 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
 
   const widthPx = baseCanvas?.width ?? 0;
   const heightPx = baseCanvas?.height ?? 0;
+  const editorDims = useMemo(
+    () => computeSnipWindowDimensions(widthPx, heightPx, 1280, 820),
+    [widthPx, heightPx]
+  );
+
+  const shortcutHint = printScreenEnabled
+    ? `PrintScreen or ${formattedCustomShortcut}`
+    : formattedCustomShortcut;
+
+  const renderShortcutSettingsPopover = () => (
+    <div
+      role="dialog"
+      aria-label="Capture keyboard shortcuts"
+      className="absolute right-0 top-full mt-1.5 w-76 sm:w-80 rounded-xl bg-white border border-slate-200 shadow-xl p-3.5 z-30 text-xs text-left"
+    >
+      <div className="flex items-center justify-between gap-2 pb-2 mb-2.5 border-b border-slate-100">
+        <div className="inline-flex items-center gap-1.5 font-semibold text-slate-800">
+          <Keyboard className="w-3.5 h-3.5 text-blue-600 shrink-0" aria-hidden="true" />
+          <span>Capture Shortcuts</span>
+        </div>
+        <button
+          type="button"
+          aria-label="Close shortcut settings"
+          onClick={() => {
+            setIsSettingsOpen(false);
+            setIsRecordingShortcut(false);
+            setShortcutError(null);
+          }}
+          className="p-0.5 text-slate-400 hover:text-slate-700 rounded cursor-pointer"
+        >
+          <X className="w-3.5 h-3.5" aria-hidden="true" />
+        </button>
+      </div>
+
+      <div className="space-y-2.5">
+        <label
+          htmlFor="printscreen-shortcut-toggle"
+          className="flex items-center justify-between gap-2 text-slate-700 cursor-pointer select-none"
+        >
+          <span>Bind PrintScreen key</span>
+          <input
+            id="printscreen-shortcut-toggle"
+            type="checkbox"
+            checked={printScreenEnabled}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              setPrintScreenEnabled(enabled);
+              setStatusMessage(
+                enabled
+                  ? 'PrintScreen capture shortcut enabled.'
+                  : 'PrintScreen capture shortcut disabled.'
+              );
+            }}
+            className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+          />
+        </label>
+
+        <div>
+          <label
+            htmlFor="custom-shortcut-select"
+            className="block text-[11px] font-medium text-slate-500 mb-1"
+          >
+            Custom Capture Shortcut
+          </label>
+          <select
+            id="custom-shortcut-select"
+            aria-label="Custom Capture Shortcut"
+            value={formattedCustomShortcut}
+            onChange={(e) => {
+              const parsed = parseShortcutString(e.target.value);
+              if (parsed) {
+                setCustomShortcut(parsed);
+                setIsRecordingShortcut(false);
+                setShortcutError(null);
+                setStatusMessage(`Selected capture shortcut: ${formatShortcutBinding(parsed)}.`);
+              }
+            }}
+            className="w-full px-2.5 py-1.5 text-xs font-mono font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+          >
+            {!SHORTCUT_PRESETS.some(
+              (preset) => formatShortcutBinding(preset.binding) === formattedCustomShortcut
+            ) && (
+              <option value={formattedCustomShortcut}>
+                {formattedCustomShortcut} (Custom)
+              </option>
+            )}
+            {SHORTCUT_PRESETS.map((preset) => {
+              const val = formatShortcutBinding(preset.binding);
+              return (
+                <option key={val} value={val}>
+                  {preset.label}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+
+        <div className="flex items-center justify-between gap-2 pt-0.5">
+          <button
+            type="button"
+            aria-pressed={isRecordingShortcut}
+            onClick={() => {
+              setShortcutError(null);
+              setIsRecordingShortcut((prev) => {
+                const next = !prev;
+                setStatusMessage(
+                  next
+                    ? 'Press your desired key combination now (or Esc to cancel)…'
+                    : 'Shortcut recording cancelled.'
+                );
+                return next;
+              });
+            }}
+            className={`px-2.5 py-1 font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              isRecordingShortcut
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+            }`}
+          >
+            {isRecordingShortcut ? 'Press keys… (Esc)' : 'Record Shortcut'}
+          </button>
+
+          {formattedCustomShortcut !== formatShortcutBinding(DEFAULT_CUSTOM_SHORTCUT) &&
+            !isRecordingShortcut && (
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomShortcut(DEFAULT_CUSTOM_SHORTCUT);
+                  setShortcutError(null);
+                  setStatusMessage(
+                    `Reset custom shortcut to ${formatShortcutBinding(DEFAULT_CUSTOM_SHORTCUT)}.`
+                  );
+                }}
+                className="text-slate-500 hover:text-slate-900 underline underline-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Reset default
+              </button>
+            )}
+        </div>
+
+        <div className="pt-2 border-t border-slate-100 font-mono tabular-nums text-[11px] text-slate-500">
+          {shortcutError ? (
+            <span role="alert" className="font-sans text-red-600 font-medium">
+              {shortcutError}
+            </span>
+          ) : (
+            <span>
+              Active:{' '}
+              {printScreenEnabled
+                ? `PrintScreen · ${formattedCustomShortcut}`
+                : formattedCustomShortcut}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <section id="studio" className="pt-8 pb-12">
       <div className="max-w-[1280px] mx-auto px-6">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleFileUpload}
+          className="hidden"
+          aria-label="Upload local image file"
+        />
+
         {/* Intro Header */}
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4 mb-6">
           <div>
@@ -1167,480 +1407,16 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
           </div>
         </div>
 
-        {/* Authentic Windows 11 Snipping Tool Window Frame */}
-        <div className="bg-white border border-slate-300 rounded-xl overflow-hidden">
-          {/* Desktop App Title Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-slate-100 border-b border-slate-200">
-            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-800">
-              <Scissors className="w-3.5 h-3.5 text-blue-600 shrink-0" aria-hidden="true" />
-              <span>SnipClip v{version}</span>
-              <span aria-hidden="true" className="text-slate-400">
-                ·
-              </span>
-              <span className="font-normal text-slate-600 font-mono">
-                Startup Auto-Detect: {sessionInfo.protocol.toUpperCase()} ({sessionInfo.detectionSource})
-              </span>
-            </div>
-            <div className="text-xs text-slate-500 font-mono tabular-nums">
-              {debFilename}
-            </div>
-          </div>
-
-          {/* Primary Windows 11 Snipping Tool Command Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 bg-white border-b border-slate-200">
-            {/* Capture Controls */}
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={startNewSnip}
-                disabled={countdownLeft !== null}
-                title={`Start a new snip (${
-                  printScreenEnabled
-                    ? `PrintScreen or ${formattedCustomShortcut}`
-                    : formattedCustomShortcut
-                })`}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                <span>
-                  {countdownLeft !== null ? `Snipping in ${countdownLeft}s…` : 'New Snip'}
-                </span>
-              </button>
-
-              <label className="sr-only" htmlFor="snip-mode-select">
-                Snipping Mode
-              </label>
-              <select
-                id="snip-mode-select"
-                aria-label="Snipping Mode"
-                value={snipMode}
-                onChange={(e) => setSnipMode(e.target.value as SnipMode)}
-                className="px-2.5 py-2 text-xs font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
-              >
-                <option value={SnipMode.Rectangle}>Rectangle mode</option>
-                <option value={SnipMode.Window}>Window mode</option>
-                <option value={SnipMode.Fullscreen}>Fullscreen mode</option>
-                <option value={SnipMode.Freeform}>Freeform mode</option>
-              </select>
-
-              <label className="sr-only" htmlFor="snip-delay-select">
-                Delay Timer
-              </label>
-              <select
-                id="snip-delay-select"
-                aria-label="Delay Timer"
-                value={delaySeconds}
-                onChange={(e) => setDelaySeconds(Number(e.target.value))}
-                className="px-2.5 py-2 text-xs font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
-              >
-                <option value={0}>No delay</option>
-                <option value={3}>3-second delay</option>
-                <option value={5}>5-second delay</option>
-                <option value={10}>10-second delay</option>
-              </select>
-            </div>
-
-            {/* Annotation Tool Strip (Compact Windows 11 Icon Bar) */}
-            <div
-              role="toolbar"
-              aria-label="Annotation tools"
-              className="flex flex-wrap items-center gap-0.5 p-1 bg-slate-100 rounded-lg"
-            >
-              {(
-                [
-                  { id: AnnotationTool.Pen, label: 'Pen', Icon: PenTool },
-                  { id: AnnotationTool.Highlighter, label: 'Highlighter', Icon: Highlighter },
-                  { id: AnnotationTool.Eraser, label: 'Eraser', Icon: Eraser },
-                  { id: AnnotationTool.Rect, label: 'Rectangle', Icon: Square },
-                  { id: AnnotationTool.Ellipse, label: 'Ellipse', Icon: Circle },
-                  { id: AnnotationTool.Line, label: 'Line', Icon: Minus },
-                  { id: AnnotationTool.Arrow, label: 'Arrow', Icon: ArrowUpRight },
-                  { id: AnnotationTool.Redact, label: 'Redact', Icon: EyeOff },
-                  { id: AnnotationTool.Pixelate, label: 'Pixelate', Icon: Grid },
-                  { id: AnnotationTool.Crop, label: 'Crop', Icon: Crop },
-                ] as const
-              ).map(({ id, label, Icon }) => {
-                const active = !isCapturing && tool === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    title={label}
-                    aria-label={label}
-                    aria-pressed={active}
-                    onClick={() => selectTool(id)}
-                    className={`inline-flex items-center justify-center p-2 text-xs font-medium rounded-md transition-colors shrink-0 cursor-pointer ${
-                      active
-                        ? 'bg-white text-blue-700 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  </button>
-                );
-              })}
-
-              <button
-                type="button"
-                title="Toggle Ruler"
-                aria-label="Toggle Ruler"
-                aria-pressed={ruler.visible}
-                onClick={() => setRuler((prev) => ({ ...prev, visible: !prev.visible }))}
-                className={`inline-flex items-center justify-center p-2 text-xs font-medium rounded-md transition-colors shrink-0 cursor-pointer ${
-                  ruler.visible
-                    ? 'bg-white text-blue-700 shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Ruler className="w-4 h-4 shrink-0" aria-hidden="true" />
-              </button>
-            </div>
-
-            {/* History & Export Actions */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button
-                type="button"
-                aria-label="Undo"
-                disabled={undoStack.length === 0}
-                onClick={handleUndo}
-                className="p-2 text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors cursor-pointer"
-              >
-                <Undo2 className="w-4 h-4" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                aria-label="Redo"
-                disabled={redoStack.length === 0}
-                onClick={handleRedo}
-                className="p-2 text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors cursor-pointer"
-              >
-                <Redo2 className="w-4 h-4" aria-hidden="true" />
-              </button>
-
-              <button
-                type="button"
-                onClick={handleCopySnip}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                {copyFeedback ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                )}
-                <span>{copyFeedback ? 'Copied' : 'Copy'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleSavePng}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                <span>Save PNG</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <FolderOpen className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                <span>Open Image</span>
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleFileUpload}
-                className="hidden"
-                aria-label="Upload local image file"
-              />
-            </div>
-          </div>
-
-          {/* Secondary Ink Style, Ruler Angle, & Zoom Sub-Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs">
-            <div className="flex flex-wrap items-center gap-4">
-              <div className="text-slate-600 font-medium capitalize">
-                Tool: <span className="text-slate-900 font-semibold">{tool}</span>
-              </div>
-
-              {/* Color Swatches */}
-              <div className="flex items-center gap-1.5" role="group" aria-label="Ink color">
-                <span className="text-slate-500 font-medium mr-1">Color:</span>
-                {INK_COLORS.map((c) => (
-                  <button
-                    key={c.hex}
-                    type="button"
-                    aria-label={`Select ${c.name} ink`}
-                    onClick={() => setInkColor(c.hex)}
-                    className={`w-5 h-5 rounded-full transition-transform cursor-pointer ${c.swatchClass} ${
-                      inkColor === c.hex
-                        ? 'ring-2 ring-offset-2 ring-blue-600 scale-110'
-                        : 'hover:scale-105'
-                    }`}
-                  />
-                ))}
-              </div>
-
-              {/* Stroke Width */}
-              <div className="flex items-center gap-2">
-                <label htmlFor="stroke-width-range" className="text-slate-500 font-medium">
-                  Size:
-                </label>
-                <input
-                  id="stroke-width-range"
-                  type="range"
-                  min={1}
-                  max={14}
-                  value={strokeWidth}
-                  onChange={(e) => setStrokeWidth(Number(e.target.value))}
-                  className="w-20 accent-blue-600 cursor-pointer"
-                />
-                <span className="font-mono tabular-nums text-slate-700 w-7">{strokeWidth}px</span>
-              </div>
-
-              {/* Ruler Angle Controls when Ruler is active */}
-              {ruler.visible && (
-                <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-                  <label htmlFor="ruler-angle-range" className="text-slate-600 font-medium">
-                    Ruler Angle:
-                  </label>
-                  <input
-                    id="ruler-angle-range"
-                    type="range"
-                    min={0}
-                    max={179}
-                    value={ruler.angleDeg}
-                    onChange={(e) =>
-                      setRuler((prev) => ({ ...prev, angleDeg: Number(e.target.value) }))
-                    }
-                    className="w-24 accent-blue-600 cursor-pointer"
-                  />
-                  <span className="font-mono tabular-nums text-slate-800 w-9">
-                    {ruler.angleDeg}°
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setRuler((prev) => ({ ...prev, angleDeg: 0 }))}
-                    className="px-2 py-0.5 text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    Reset 0°
-                  </button>
-                </div>
-              )}
-
-              {/* Clear All Ink */}
-              {annotations.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleClearAllInk}
-                  className="inline-flex items-center gap-1 text-slate-600 hover:text-red-600 font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
-                  <span>Clear Ink ({annotations.length})</span>
-                </button>
-              )}
-            </div>
-
-            {/* Zoom Controls */}
-            <div className="flex items-center gap-1.5 font-mono tabular-nums">
-              <button
-                type="button"
-                aria-label="Zoom out"
-                onClick={() => setZoom((z) => Math.max(0.25, Number((z - 0.25).toFixed(2))))}
-                className="p-1 text-slate-600 hover:text-slate-900 rounded cursor-pointer"
-              >
-                <ZoomOut className="w-3.5 h-3.5" aria-hidden="true" />
-              </button>
-              <span className="text-slate-700 w-12 text-center">{Math.round(zoom * 100)}%</span>
-              <button
-                type="button"
-                aria-label="Zoom in"
-                onClick={() => setZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
-                className="p-1 text-slate-600 hover:text-slate-900 rounded cursor-pointer"
-              >
-                <ZoomIn className="w-3.5 h-3.5" aria-hidden="true" />
-              </button>
-              {zoom !== 1 && (
-                <button
-                  type="button"
-                  aria-label="Reset zoom to 100%"
-                  onClick={() => setZoom(1)}
-                  className="p-1 text-slate-500 hover:text-slate-900 rounded cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Capture Keyboard Shortcuts Configuration Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 bg-white border-b border-slate-200 text-xs">
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="inline-flex items-center gap-1.5 text-slate-700 font-medium">
-                <Keyboard className="w-3.5 h-3.5 text-slate-500 shrink-0" aria-hidden="true" />
-                <span>Capture Shortcuts:</span>
-              </div>
-
-              <label
-                htmlFor="printscreen-shortcut-toggle"
-                className="inline-flex items-center gap-1.5 text-slate-700 cursor-pointer select-none whitespace-nowrap shrink-0"
-              >
-                <input
-                  id="printscreen-shortcut-toggle"
-                  type="checkbox"
-                  checked={printScreenEnabled}
-                  onChange={(e) => {
-                    const enabled = e.target.checked;
-                    setPrintScreenEnabled(enabled);
-                    setStatusMessage(
-                      enabled
-                        ? 'PrintScreen capture shortcut enabled.'
-                        : 'PrintScreen capture shortcut disabled.'
-                    );
-                  }}
-                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
-                />
-                <span className="font-mono">PrintScreen</span>
-              </label>
-
-              <span aria-hidden="true" className="text-slate-300">
-                ·
-              </span>
-
-              <label className="sr-only" htmlFor="custom-shortcut-select">
-                Custom Capture Shortcut
-              </label>
-              <select
-                id="custom-shortcut-select"
-                aria-label="Custom Capture Shortcut"
-                value={formattedCustomShortcut}
-                onChange={(e) => {
-                  const parsed = parseShortcutString(e.target.value);
-                  if (parsed) {
-                    setCustomShortcut(parsed);
-                    setIsRecordingShortcut(false);
-                    setShortcutError(null);
-                    setStatusMessage(
-                      `Selected capture shortcut: ${formatShortcutBinding(parsed)}.`
-                    );
-                  }
-                }}
-                className="px-2.5 py-1 text-xs font-mono font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
-              >
-                {!SHORTCUT_PRESETS.some(
-                  (preset) => formatShortcutBinding(preset.binding) === formattedCustomShortcut
-                ) && (
-                  <option value={formattedCustomShortcut}>
-                    {formattedCustomShortcut} (Custom)
-                  </option>
-                )}
-                {SHORTCUT_PRESETS.map((preset) => {
-                  const val = formatShortcutBinding(preset.binding);
-                  return (
-                    <option key={val} value={val}>
-                      {preset.label}
-                    </option>
-                  );
-                })}
-              </select>
-
-              <button
-                type="button"
-                aria-pressed={isRecordingShortcut}
-                onClick={() => {
-                  setShortcutError(null);
-                  setIsRecordingShortcut((prev) => {
-                    const next = !prev;
-                    setStatusMessage(
-                      next
-                        ? 'Press your desired key combination now (or Esc to cancel)…'
-                        : 'Shortcut recording cancelled.'
-                    );
-                    return next;
-                  });
-                }}
-                className={`px-2.5 py-1 font-medium rounded-md border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  isRecordingShortcut
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                }`}
-              >
-                {isRecordingShortcut ? 'Press keys… (Esc)' : 'Record Shortcut'}
-              </button>
-
-              {formattedCustomShortcut !== formatShortcutBinding(DEFAULT_CUSTOM_SHORTCUT) &&
-                !isRecordingShortcut && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCustomShortcut(DEFAULT_CUSTOM_SHORTCUT);
-                      setShortcutError(null);
-                      setStatusMessage(
-                        `Reset custom shortcut to ${formatShortcutBinding(DEFAULT_CUSTOM_SHORTCUT)}.`
-                      );
-                    }}
-                    className="text-slate-500 hover:text-slate-900 underline underline-offset-2 whitespace-nowrap shrink-0 cursor-pointer"
-                  >
-                    Reset default
-                  </button>
-                )}
-            </div>
-
-            <div className="font-mono tabular-nums text-slate-500">
-              {shortcutError ? (
-                <span role="alert" className="font-sans text-red-600 font-medium">
-                  {shortcutError}
-                </span>
-              ) : (
-                <span>
-                  Active:{' '}
-                  {printScreenEnabled
-                    ? `PrintScreen · ${formattedCustomShortcut}`
-                    : formattedCustomShortcut}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Contextual Crop Action Bar */}
-          {tool === AnnotationTool.Crop && !isCapturing && cropRect && (
-            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 bg-blue-50 border-b border-blue-200 text-xs">
-              <div className="text-blue-950 font-medium font-mono tabular-nums">
-                Crop Selection: {cropRect.width} × {cropRect.height} px (at {cropRect.x},{' '}
-                {cropRect.y}) — drag on image to resize
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={applyCrop}
-                  className="px-3 py-1.5 font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  Apply Crop
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCropRect(null);
-                    setTool(AnnotationTool.Pen);
-                  }}
-                  className="px-3 py-1.5 font-medium text-slate-700 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  Cancel Crop
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Main Viewport: Either Live Capture Overlay OR Annotation Canvas */}
+        {/* Subtle Desktop Workspace Stage */}
+        <div className="rounded-2xl border border-slate-200/90 bg-gradient-to-b from-slate-100 to-slate-200/60 px-4 py-8 sm:px-8 sm:py-10">
           {isCapturing ? (
-            <div className="relative bg-slate-900 p-4 flex flex-col items-center">
-              {/* Floating Windows 11 Capture Mode Switcher Bar */}
+            /* 1. Capture Overlay Mode */
+            <div className="max-w-[1120px] mx-auto bg-slate-900 border border-slate-800 rounded-xl shadow-xl p-4 flex flex-col items-center">
+              {/* Floating Windows 11 Capture Mode Switcher Pill */}
               <div
                 role="toolbar"
                 aria-label="Live capture mode switcher"
-                className="mb-3 flex flex-wrap items-center gap-1 p-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs"
+                className="mb-3 flex flex-wrap items-center gap-1 p-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs shadow-md"
               >
                 {(
                   [
@@ -1729,37 +1505,531 @@ export const SnipStudio: React.FC<SnipStudioProps> = ({
                 )}
               </div>
             </div>
+          ) : !baseCanvas ? (
+            /* 2. Compact Microsoft Snipping Tool Launcher Mode (460 × 200 px) */
+            <div
+              data-testid="snip-launcher-window"
+              style={{
+                width: '100%',
+                maxWidth: `${LAUNCHER_WINDOW_WIDTH}px`,
+                minHeight: `${LAUNCHER_WINDOW_HEIGHT}px`,
+              }}
+              className="mx-auto bg-white border border-slate-300 rounded-xl shadow-lg flex flex-col relative"
+            >
+              {/* Compact Title Bar (32px) */}
+              <div className="h-8 px-3 bg-slate-100 border-b border-slate-200 rounded-t-xl flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Scissors className="w-3.5 h-3.5 text-blue-600 shrink-0" aria-hidden="true" />
+                  <span className="font-semibold text-slate-800 truncate">
+                    SnipClip v{version}
+                  </span>
+                  <span
+                    title={`Auto-detected via ${sessionInfo.detectionSource}`}
+                    className="px-1.5 py-0.5 rounded bg-slate-200/85 text-[10px] font-mono font-semibold text-slate-700 shrink-0"
+                  >
+                    {sessionInfo.protocol.toUpperCase()}
+                  </span>
+                </div>
+                <span className="text-[11px] font-mono tabular-nums text-slate-500 shrink-0">
+                  {LAUNCHER_WINDOW_WIDTH}×{LAUNCHER_WINDOW_HEIGHT}
+                </span>
+              </div>
+
+              {/* Compact Single-Row Windows 11 Command Bar (48px) */}
+              <div className="h-12 px-2.5 bg-white border-b border-slate-200 flex items-center justify-between gap-1.5">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <button
+                    type="button"
+                    onClick={startNewSnip}
+                    disabled={countdownLeft !== null}
+                    title={`Start a new snip (${shortcutHint})`}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{countdownLeft !== null ? `${countdownLeft}s…` : 'New'}</span>
+                  </button>
+
+                  <label className="sr-only" htmlFor="snip-mode-select">
+                    Snipping Mode
+                  </label>
+                  <select
+                    id="snip-mode-select"
+                    aria-label="Snipping Mode"
+                    value={snipMode}
+                    onChange={(e) => setSnipMode(e.target.value as SnipMode)}
+                    className="px-2 py-1.5 text-xs font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+                  >
+                    <option value={SnipMode.Rectangle}>Rectangle</option>
+                    <option value={SnipMode.Window}>Window</option>
+                    <option value={SnipMode.Fullscreen}>Fullscreen</option>
+                    <option value={SnipMode.Freeform}>Freeform</option>
+                  </select>
+
+                  <label className="sr-only" htmlFor="snip-delay-select">
+                    Delay Timer
+                  </label>
+                  <select
+                    id="snip-delay-select"
+                    aria-label="Delay Timer"
+                    value={delaySeconds}
+                    onChange={(e) => setDelaySeconds(Number(e.target.value))}
+                    className="px-2 py-1.5 text-xs font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+                  >
+                    <option value={0}>No delay</option>
+                    <option value={3}>3s</option>
+                    <option value={5}>5s</option>
+                    <option value={10}>10s</option>
+                  </select>
+                </div>
+
+                <div ref={settingsContainerRef} className="relative flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    aria-label="Open Image"
+                    title="Open local image file"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-1.5 text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+                  >
+                    <FolderOpen className="w-4 h-4" aria-hidden="true" />
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label="Capture shortcut settings"
+                    aria-expanded={isSettingsOpen}
+                    title={`Capture shortcuts (${shortcutHint})`}
+                    onClick={() => setIsSettingsOpen((prev) => !prev)}
+                    className={`p-1.5 border rounded-md transition-colors cursor-pointer ${
+                      isSettingsOpen
+                        ? 'bg-slate-100 text-blue-600 border-slate-300'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <MoreHorizontal className="w-4 h-4" aria-hidden="true" />
+                  </button>
+
+                  {isSettingsOpen && renderShortcutSettingsPopover()}
+                </div>
+              </div>
+
+              {/* Compact Launcher Body (~118px -> 460 × 200 px total window frame) */}
+              <div className="flex-1 min-h-[118px] px-4 py-3 flex flex-col items-center justify-center text-center bg-slate-50/70 rounded-b-xl">
+                <p className="text-xs font-medium text-slate-700">
+                  {countdownLeft !== null
+                    ? `Capturing ${snipMode} snip in ${countdownLeft}s… (Esc to cancel)`
+                    : "Press PrintScreen or click '+ New' to snip"}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleLoadSampleWindow}
+                  className="mt-2 text-[11px] font-medium text-blue-600 hover:text-blue-800 underline underline-offset-2 cursor-pointer"
+                >
+                  Load sample window snip
+                </button>
+              </div>
+            </div>
           ) : (
-            <div className="bg-slate-100 min-h-[420px] max-h-[620px] overflow-auto p-6 flex">
-              <div className="relative m-auto shrink-0 shadow-sm border border-slate-300 bg-white">
-                <canvas
-                  ref={editorCanvasRef}
-                  data-testid="snip-editor-canvas"
-                  data-width={widthPx}
-                  data-height={heightPx}
-                  data-annotations={annotations.length}
-                  onPointerDown={onEditorPointerDown}
-                  onPointerMove={onEditorPointerMove}
-                  onPointerUp={onEditorPointerUp}
-                  className="max-w-none block cursor-crosshair touch-none"
-                />
+            /* 3. Dynamic Editor Mode (Sized Naturally to Captured Snip) */
+            <div
+              data-testid="snip-editor-window"
+              style={{ width: '100%', maxWidth: `${editorDims.width}px` }}
+              className="mx-auto bg-white border border-slate-300 rounded-xl shadow-lg flex flex-col relative transition-[max-width] duration-150"
+            >
+              {/* Compact Editor Title Bar */}
+              <div className="px-3 py-1.5 bg-slate-100 border-b border-slate-200 rounded-t-xl flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Scissors className="w-3.5 h-3.5 text-blue-600 shrink-0" aria-hidden="true" />
+                  <span className="font-semibold text-slate-800 truncate">
+                    SnipClip v{version}
+                  </span>
+                  <span
+                    title={`Auto-detected via ${sessionInfo.detectionSource}`}
+                    className="px-1.5 py-0.5 rounded bg-slate-200/85 text-[10px] font-mono font-semibold text-slate-700 shrink-0"
+                  >
+                    {sessionInfo.protocol.toUpperCase()}
+                  </span>
+                  <span className="hidden sm:inline text-[11px] font-mono tabular-nums text-slate-500">
+                    {widthPx}×{heightPx}px
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="hidden md:inline text-[11px] font-mono tabular-nums text-slate-400">
+                    {editorDims.width}×{editorDims.height}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Close snip"
+                    title="Close snip and return to compact 460×200 launcher"
+                    onClick={handleResetToLauncher}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded hover:bg-slate-50 transition-colors cursor-pointer"
+                  >
+                    <X className="w-3 h-3" aria-hidden="true" />
+                    <span>Close snip</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Sleek Windows 11 Editor Command & Annotation Header */}
+              <div className="flex flex-wrap items-center justify-between gap-1.5 px-2.5 py-2 bg-white border-b border-slate-200">
+                {/* Capture Controls */}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={startNewSnip}
+                    disabled={countdownLeft !== null}
+                    title={`Start a new snip (${shortcutHint})`}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>{countdownLeft !== null ? `${countdownLeft}s…` : 'New'}</span>
+                  </button>
+
+                  <label className="sr-only" htmlFor="snip-mode-select">
+                    Snipping Mode
+                  </label>
+                  <select
+                    id="snip-mode-select"
+                    aria-label="Snipping Mode"
+                    value={snipMode}
+                    onChange={(e) => setSnipMode(e.target.value as SnipMode)}
+                    className="px-2 py-1.5 text-xs font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+                  >
+                    <option value={SnipMode.Rectangle}>Rectangle</option>
+                    <option value={SnipMode.Window}>Window</option>
+                    <option value={SnipMode.Fullscreen}>Fullscreen</option>
+                    <option value={SnipMode.Freeform}>Freeform</option>
+                  </select>
+
+                  <label className="sr-only" htmlFor="snip-delay-select">
+                    Delay Timer
+                  </label>
+                  <select
+                    id="snip-delay-select"
+                    aria-label="Delay Timer"
+                    value={delaySeconds}
+                    onChange={(e) => setDelaySeconds(Number(e.target.value))}
+                    className="px-2 py-1.5 text-xs font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-md hover:bg-slate-100 transition-colors cursor-pointer"
+                  >
+                    <option value={0}>No delay</option>
+                    <option value={3}>3s</option>
+                    <option value={5}>5s</option>
+                    <option value={10}>10s</option>
+                  </select>
+                </div>
+
+                {/* Annotation Tool Strip */}
+                <div
+                  role="toolbar"
+                  aria-label="Annotation tools"
+                  className="flex flex-wrap items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg"
+                >
+                  {(
+                    [
+                      { id: AnnotationTool.Pen, label: 'Pen', Icon: PenTool },
+                      { id: AnnotationTool.Highlighter, label: 'Highlighter', Icon: Highlighter },
+                      { id: AnnotationTool.Eraser, label: 'Eraser', Icon: Eraser },
+                      { id: AnnotationTool.Rect, label: 'Rectangle', Icon: Square },
+                      { id: AnnotationTool.Ellipse, label: 'Ellipse', Icon: Circle },
+                      { id: AnnotationTool.Line, label: 'Line', Icon: Minus },
+                      { id: AnnotationTool.Arrow, label: 'Arrow', Icon: ArrowUpRight },
+                      { id: AnnotationTool.Redact, label: 'Redact', Icon: EyeOff },
+                      { id: AnnotationTool.Pixelate, label: 'Pixelate', Icon: Grid },
+                      { id: AnnotationTool.Crop, label: 'Crop', Icon: Crop },
+                    ] as const
+                  ).map(({ id, label, Icon }) => {
+                    const active = !isCapturing && tool === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        title={label}
+                        aria-label={label}
+                        aria-pressed={active}
+                        onClick={() => selectTool(id)}
+                        className={`inline-flex items-center justify-center p-1.5 text-xs font-medium rounded-md transition-colors shrink-0 cursor-pointer ${
+                          active
+                            ? 'bg-white text-blue-700 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+
+                  <button
+                    type="button"
+                    title="Toggle Ruler"
+                    aria-label="Toggle Ruler"
+                    aria-pressed={ruler.visible}
+                    onClick={() => setRuler((prev) => ({ ...prev, visible: !prev.visible }))}
+                    className={`inline-flex items-center justify-center p-1.5 text-xs font-medium rounded-md transition-colors shrink-0 cursor-pointer ${
+                      ruler.visible
+                        ? 'bg-white text-blue-700 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Ruler className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  </button>
+                </div>
+
+                {/* History, Export, & Shortcut Popover Actions */}
+                <div ref={settingsContainerRef} className="relative flex items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label="Undo"
+                    title="Undo (Ctrl+Z)"
+                    disabled={undoStack.length === 0}
+                    onClick={handleUndo}
+                    className="p-1.5 text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-40 transition-colors cursor-pointer"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Redo"
+                    title="Redo (Ctrl+Y)"
+                    disabled={redoStack.length === 0}
+                    onClick={handleRedo}
+                    className="p-1.5 text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 disabled:opacity-40 transition-colors cursor-pointer"
+                  >
+                    <Redo2 className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+
+                  <button
+                    type="button"
+                    title="Copy PNG to clipboard (Ctrl+C)"
+                    onClick={() => void handleCopySnip()}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    {copyFeedback ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    )}
+                    <span>{copyFeedback ? 'Copied' : 'Copy'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    title="Save PNG (Ctrl+S)"
+                    onClick={handleSavePng}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    <span>Save PNG</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label="Open Image"
+                    title="Open local image file"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-1.5 text-slate-700 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors cursor-pointer"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label="Capture shortcut settings"
+                    aria-expanded={isSettingsOpen}
+                    title={`Capture shortcuts (${shortcutHint})`}
+                    onClick={() => setIsSettingsOpen((prev) => !prev)}
+                    className={`p-1.5 border rounded-md transition-colors cursor-pointer ${
+                      isSettingsOpen
+                        ? 'bg-slate-100 text-blue-600 border-slate-300'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    <MoreHorizontal className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+
+                  {isSettingsOpen && renderShortcutSettingsPopover()}
+                </div>
+              </div>
+
+              {/* Compact Ink Style, Ruler Angle, & Zoom Sub-Strip */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5 px-3 py-1.5 bg-slate-50 border-b border-slate-200 text-xs">
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Color Swatches */}
+                  <div className="flex items-center gap-1.5" role="group" aria-label="Ink color">
+                    {INK_COLORS.map((c) => (
+                      <button
+                        key={c.hex}
+                        type="button"
+                        aria-label={`Select ${c.name} ink`}
+                        onClick={() => setInkColor(c.hex)}
+                        className={`w-4 h-4 rounded-full transition-transform cursor-pointer ${c.swatchClass} ${
+                          inkColor === c.hex
+                            ? 'ring-2 ring-offset-1 ring-blue-600 scale-110'
+                            : 'hover:scale-105'
+                        }`}
+                      />
+                    ))}
+                  </div>
+
+                  {/* Stroke Width */}
+                  <div className="flex items-center gap-1.5">
+                    <label htmlFor="stroke-width-range" className="text-slate-500 font-medium">
+                      Size
+                    </label>
+                    <input
+                      id="stroke-width-range"
+                      type="range"
+                      min={1}
+                      max={14}
+                      value={strokeWidth}
+                      onChange={(e) => setStrokeWidth(Number(e.target.value))}
+                      className="w-16 accent-blue-600 cursor-pointer"
+                    />
+                    <span className="font-mono tabular-nums text-slate-700 w-6">
+                      {strokeWidth}px
+                    </span>
+                  </div>
+
+                  {/* Ruler Angle Controls when Ruler is active */}
+                  {ruler.visible && (
+                    <div className="flex items-center gap-1.5 pl-2 border-l border-slate-200">
+                      <label htmlFor="ruler-angle-range" className="text-slate-600 font-medium">
+                        Angle
+                      </label>
+                      <input
+                        id="ruler-angle-range"
+                        type="range"
+                        min={0}
+                        max={179}
+                        value={ruler.angleDeg}
+                        onChange={(e) =>
+                          setRuler((prev) => ({ ...prev, angleDeg: Number(e.target.value) }))
+                        }
+                        className="w-20 accent-blue-600 cursor-pointer"
+                      />
+                      <span className="font-mono tabular-nums text-slate-800 w-8">
+                        {ruler.angleDeg}°
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setRuler((prev) => ({ ...prev, angleDeg: 0 }))}
+                        className="px-1.5 py-0.5 text-[11px] text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        0°
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Clear All Ink */}
+                  {annotations.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleClearAllInk}
+                      className="inline-flex items-center gap-1 text-slate-600 hover:text-red-600 font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Clear ({annotations.length})</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Zoom Controls */}
+                <div className="flex items-center gap-1 font-mono tabular-nums">
+                  <button
+                    type="button"
+                    aria-label="Zoom out"
+                    onClick={() => setZoom((z) => Math.max(0.25, Number((z - 0.25).toFixed(2))))}
+                    className="p-0.5 text-slate-600 hover:text-slate-900 rounded cursor-pointer"
+                  >
+                    <ZoomOut className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                  <span className="text-slate-700 w-10 text-center">
+                    {Math.round(zoom * 100)}%
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Zoom in"
+                    onClick={() => setZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
+                    className="p-0.5 text-slate-600 hover:text-slate-900 rounded cursor-pointer"
+                  >
+                    <ZoomIn className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                  {zoom !== 1 && (
+                    <button
+                      type="button"
+                      aria-label="Reset zoom to 100%"
+                      onClick={() => setZoom(1)}
+                      className="p-0.5 text-slate-500 hover:text-slate-900 rounded cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Contextual Crop Action Bar */}
+              {tool === AnnotationTool.Crop && cropRect && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-blue-50 border-b border-blue-200 text-xs">
+                  <div className="text-blue-950 font-medium font-mono tabular-nums">
+                    Crop: {cropRect.width} × {cropRect.height} px (at {cropRect.x}, {cropRect.y})
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={applyCrop}
+                      className="px-2.5 py-1 font-semibold text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Apply Crop
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCropRect(null);
+                        setTool(AnnotationTool.Pen);
+                      }}
+                      className="px-2.5 py-1 font-medium text-slate-700 bg-white border border-slate-300 rounded hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Cancel Crop
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Editor Canvas Viewport */}
+              <div
+                style={{
+                  minHeight: '220px',
+                  maxHeight: `${Math.max(260, editorDims.height - 120)}px`,
+                }}
+                className="bg-slate-100/90 overflow-auto p-4 flex"
+              >
+                <div className="relative m-auto shrink-0 shadow-sm border border-slate-300 bg-white">
+                  <canvas
+                    ref={editorCanvasRef}
+                    data-testid="snip-editor-canvas"
+                    data-width={widthPx}
+                    data-height={heightPx}
+                    data-annotations={annotations.length}
+                    onPointerDown={onEditorPointerDown}
+                    onPointerMove={onEditorPointerMove}
+                    onPointerUp={onEditorPointerUp}
+                    className="max-w-none block cursor-crosshair touch-none"
+                  />
+                </div>
+              </div>
+
+              {/* Slim Editor Status Footer */}
+              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 bg-white border-t border-slate-200 rounded-b-xl text-[11px] text-slate-500">
+                <span className="truncate max-w-[65%]">{statusMessage}</span>
+                <div className="flex items-center gap-1.5 font-mono tabular-nums shrink-0">
+                  <span>
+                    {widthPx} × {heightPx} px
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>{annotations.length} ink</span>
+                </div>
               </div>
             </div>
           )}
-
-          {/* Bottom Status Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-2.5 bg-white border-t border-slate-200 text-xs text-slate-600">
-            <span>{statusMessage}</span>
-            <div className="flex items-center gap-2 font-mono tabular-nums text-slate-500">
-              <span>
-                {widthPx} × {heightPx} px
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>{annotations.length} annotations</span>
-              <span aria-hidden="true">·</span>
-              <span>Undo stack: {undoStack.length}</span>
-            </div>
-          </div>
         </div>
       </div>
     </section>

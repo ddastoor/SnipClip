@@ -18,8 +18,8 @@ Natively compiled **C11 + GTK 3 + Cairo** Windows 11 Snipping Tool clone for Deb
 
 ## Graphical Install & Launch (Zero Command Line Required)
 
-1. **Download `snipclip_2.0.0_amd64.deb`** from the GitHub Releases page (or directly from the web workbench).
-2. **Double-click `snipclip_2.0.0_amd64.deb`** in your file manager (Dolphin, GNOME Files, Nemo, Thunar) to open **KDE Discover**, **GNOME Software**, or **GDebi**, then click **Install** (or **Update**).
+1. **Download `snipclip_2.1.0_amd64.deb`** from the GitHub Releases page (or directly from the web workbench).
+2. **Double-click `snipclip_2.1.0_amd64.deb`** in your file manager (Dolphin, GNOME Files, Nemo, Thunar) to open **KDE Discover**, **GNOME Software**, or **GDebi**, then click **Install** (or **Update**).
 3. **Click "Launch" right inside the GUI installer** or open **SnipClip** from your desktop's **Application Launcher** (`Utilities`, `Graphics`, or `All Applications`).
 4. **Automatic X11 & Wayland Startup Detection**: SnipClip automatically detects **Wayland** or **X11** on GUI launch — zero terminal commands or flags needed.
 
@@ -28,8 +28,8 @@ Natively compiled **C11 + GTK 3 + Cairo** Windows 11 Snipping Tool clone for Deb
 Pushing changes to `main` (or pushing a `v*.*.*` tag) automatically triggers `.github/workflows/release-deb.yml` inside a `debian:bookworm` container to compile the C11/GTK3 binary, run all test suites, build `snipclip_<version>_amd64.deb`, and publish it to the GitHub Releases page.
 
 ```bash
-# 1. Compile native C11 + GTK 3 ELF binary & package snipclip_2.0.0_amd64.deb into public/releases/
-./scripts/build-deb.sh 2.0.0
+# 1. Compile native C11 + GTK 3 ELF binary & package snipclip_2.1.0_amd64.deb into public/releases/
+./scripts/build-deb.sh 2.1.0
 
 # 2. Run the full repository test suite (Native C tests + ELF/.deb integration tests + TypeScript tests + tsc)
 ./scripts/run-tests.sh

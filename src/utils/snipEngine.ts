@@ -94,6 +94,54 @@ export interface ReleaseVersionSync {
   cliBanner: string;
 }
 
+export const LAUNCHER_WINDOW_WIDTH = 460;
+export const LAUNCHER_WINDOW_HEIGHT = 200;
+export const EDITOR_MIN_WIDTH = 560;
+export const EDITOR_MIN_HEIGHT = 380;
+export const EDITOR_CHROME_WIDTH = 48;
+export const EDITOR_CHROME_HEIGHT = 136;
+
+export interface SnipWindowDimensions {
+  width: number;
+  height: number;
+  isLauncher: boolean;
+}
+
+export function computeSnipWindowDimensions(
+  imageWidth: number,
+  imageHeight: number,
+  workareaWidth = 1920,
+  workareaHeight = 1080
+): SnipWindowDimensions {
+  if (imageWidth <= 0 || imageHeight <= 0) {
+    const width =
+      workareaWidth > 120 ? Math.min(LAUNCHER_WINDOW_WIDTH, workareaWidth - 32) : LAUNCHER_WINDOW_WIDTH;
+    const height =
+      workareaHeight > 120
+        ? Math.min(LAUNCHER_WINDOW_HEIGHT, workareaHeight - 32)
+        : LAUNCHER_WINDOW_HEIGHT;
+    return {
+      width,
+      height,
+      isLauncher: true,
+    };
+  }
+
+  const maxW = workareaWidth > 0 ? Math.max(320, Math.floor(workareaWidth * 0.8)) : 1100;
+  const maxH = workareaHeight > 0 ? Math.max(240, Math.floor(workareaHeight * 0.8)) : 760;
+  const minW = Math.min(EDITOR_MIN_WIDTH, maxW);
+  const minH = Math.min(EDITOR_MIN_HEIGHT, maxH);
+  const width = Math.max(minW, Math.min(maxW, Math.round(imageWidth) + EDITOR_CHROME_WIDTH));
+  const height = Math.max(minH, Math.min(maxH, Math.round(imageHeight) + EDITOR_CHROME_HEIGHT));
+
+  return {
+    width,
+    height,
+    isLauncher: false,
+  };
+}
+
+
 export function detectLinuxDisplaySession(
   env: LinuxEnvInput,
   bins: LinuxBinarySet

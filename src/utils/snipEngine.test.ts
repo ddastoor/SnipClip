@@ -6,14 +6,21 @@ import crypto from 'node:crypto';
 import {
   AnnotationTool,
   computePolygonBounds,
+  computeSnipWindowDimensions,
   DEFAULT_CUSTOM_SHORTCUT,
   detectLinuxDisplaySession,
   DisplayProtocol,
+  EDITOR_CHROME_HEIGHT,
+  EDITOR_CHROME_WIDTH,
+  EDITOR_MIN_HEIGHT,
+  EDITOR_MIN_WIDTH,
   evaluateCaptureShortcut,
   fitRulerToCanvas,
   formatShortcutBinding,
   hitTestAnnotation,
   isEditableElement,
+  LAUNCHER_WINDOW_HEIGHT,
+  LAUNCHER_WINDOW_WIDTH,
   matchesShortcutBinding,
   normalizeRect,
   normalizeShortcutKey,
@@ -399,6 +406,50 @@ test('evaluates PrintScreen and custom capture shortcuts while protecting inputs
     ),
     true
   );
+});
+
+test('computes compact Windows 11 launcher (460x200) and dynamic editor window dimensions', () => {
+  assert.equal(LAUNCHER_WINDOW_WIDTH, 460);
+  assert.equal(LAUNCHER_WINDOW_HEIGHT, 200);
+  assert.equal(EDITOR_MIN_WIDTH, 560);
+  assert.equal(EDITOR_MIN_HEIGHT, 380);
+  assert.equal(EDITOR_CHROME_WIDTH, 48);
+  assert.equal(EDITOR_CHROME_HEIGHT, 136);
+
+  // 1. Empty launcher (0x0) defaults to compact 460x200 frame
+  assert.deepEqual(computeSnipWindowDimensions(0, 0), {
+    width: 460,
+    height: 200,
+    isLauncher: true,
+  });
+
+  // Launcher clamps cleanly on very narrow workareas (> 120px)
+  assert.deepEqual(computeSnipWindowDimensions(0, 0, 380, 210), {
+    width: 348,
+    height: 178,
+    isLauncher: true,
+  });
+
+  // 2. Small snip (240x140) expands to editor minimum bounds (560x380)
+  assert.deepEqual(computeSnipWindowDimensions(240, 140, 1920, 1080), {
+    width: 560,
+    height: 380,
+    isLauncher: false,
+  });
+
+  // 3. Medium snip (620x380) sizes naturally to image + editor chrome (668x516)
+  assert.deepEqual(computeSnipWindowDimensions(620, 380, 1920, 1080), {
+    width: 620 + EDITOR_CHROME_WIDTH,
+    height: 380 + EDITOR_CHROME_HEIGHT,
+    isLauncher: false,
+  });
+
+  // 4. Fullscreen snip (1920x1080) clamps cleanly to 80% of monitor workarea (1536x864)
+  assert.deepEqual(computeSnipWindowDimensions(1920, 1080, 1920, 1080), {
+    width: Math.floor(1920 * 0.8),
+    height: Math.floor(1080 * 0.8),
+    isLauncher: false,
+  });
 });
 
 test('cross-stack parity: VERSION, releaseInfo.json, C snipclip_version.h, ELF binary, and built .deb match', () => {

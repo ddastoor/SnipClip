@@ -3,7 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-RAW_VERSION="${1:-${GITHUB_REF_NAME:-}}"
+RAW_VERSION="${1:-}"
+if [[ -z "${RAW_VERSION}" && "${GITHUB_REF_NAME:-}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]]; then
+  RAW_VERSION="${GITHUB_REF_NAME}"
+fi
 if [[ -z "${RAW_VERSION}" ]]; then
   RAW_VERSION="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
 fi

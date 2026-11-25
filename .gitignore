@@ -1,0 +1,14 @@
+# Node / Vite build & dependencies
+node_modules/
+dist/
+
+# Native C11 / GTK 3 build outputs
+native/build/
+
+# Python test bytecode
+__pycache__/
+*.py[cod]
+
+# OS / editor scratch files
+.DS_Store
+*.swp

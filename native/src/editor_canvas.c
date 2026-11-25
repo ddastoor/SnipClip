@@ -147,12 +147,12 @@ static void editor_notify(ScEditorCanvas *ed) {
 
 static void editor_sync_size_request(ScEditorCanvas *ed) {
     if (!ed->pixbuf) {
-        gtk_widget_set_size_request(ed->drawing_area, 560, 360);
+        gtk_widget_set_size_request(ed->drawing_area, -1, -1);
         return;
     }
-    int w = (int)(gdk_pixbuf_get_width(ed->pixbuf) * ed->zoom) + 64;
-    int h = (int)(gdk_pixbuf_get_height(ed->pixbuf) * ed->zoom) + 64;
-    gtk_widget_set_size_request(ed->drawing_area, w < 560 ? 560 : w, h < 360 ? 360 : h);
+    int w = (int)(gdk_pixbuf_get_width(ed->pixbuf) * ed->zoom) + 32;
+    int h = (int)(gdk_pixbuf_get_height(ed->pixbuf) * ed->zoom) + 32;
+    gtk_widget_set_size_request(ed->drawing_area, w, h);
 }
 
 static void editor_push_undo(ScEditorCanvas *ed) {
@@ -215,8 +215,8 @@ static void editor_canvas_origin(const ScEditorCanvas *ed, double *out_ox, doubl
     int alloc_h = gtk_widget_get_allocated_height(ed->drawing_area);
     double sw = gdk_pixbuf_get_width(ed->pixbuf) * ed->zoom;
     double sh = gdk_pixbuf_get_height(ed->pixbuf) * ed->zoom;
-    *out_ox = fmax(24.0, (alloc_w - sw) / 2.0);
-    *out_oy = fmax(24.0, (alloc_h - sh) / 2.0);
+    *out_ox = fmax(16.0, (alloc_w - sw) / 2.0);
+    *out_oy = fmax(16.0, (alloc_h - sh) / 2.0);
 }
 
 static ScPoint widget_to_image(const ScEditorCanvas *ed, double wx, double wy) {
@@ -555,14 +555,25 @@ static gboolean on_canvas_draw(GtkWidget *widget, cairo_t *cr, gpointer user_dat
     cairo_fill(cr);
 
     if (!ed->pixbuf) {
-        const char *msg = "Click '+ New' or press PrintScreen to capture a snip.";
+        const char *line1 = "Click '+ New' or press PrintScreen to snip";
+        const char *line2 = "Ctrl+Shift+S shortcut  \xc2\xb7  Ctrl+O to open image";
+        double cy = (double)ah / 2.0;
+
+        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+        cairo_set_font_size(cr, 13.0);
+        cairo_text_extents_t ext1;
+        cairo_text_extents(cr, line1, &ext1);
+        cairo_set_source_rgb(cr, 0.200, 0.255, 0.333); /* #334155 */
+        cairo_move_to(cr, ((double)aw - ext1.width) / 2.0 - ext1.x_bearing, cy - 5.0);
+        cairo_show_text(cr, line1);
+
         cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-        cairo_set_font_size(cr, 14.0);
-        cairo_text_extents_t ext;
-        cairo_text_extents(cr, msg, &ext);
-        cairo_set_source_rgb(cr, 0.39, 0.45, 0.55);
-        cairo_move_to(cr, (aw - ext.width) / 2.0, (ah + ext.height) / 2.0);
-        cairo_show_text(cr, msg);
+        cairo_set_font_size(cr, 11.5);
+        cairo_text_extents_t ext2;
+        cairo_text_extents(cr, line2, &ext2);
+        cairo_set_source_rgb(cr, 0.392, 0.455, 0.545); /* #64748b */
+        cairo_move_to(cr, ((double)aw - ext2.width) / 2.0 - ext2.x_bearing, cy + 15.0);
+        cairo_show_text(cr, line2);
         return TRUE;
     }
 
@@ -636,7 +647,7 @@ ScEditorCanvas *sc_editor_canvas_new(ScEditorStateCb on_state_changed, void *use
     ed->user_data = user_data;
 
     ed->drawing_area = gtk_drawing_area_new();
-    gtk_widget_set_size_request(ed->drawing_area, 560, 360);
+    gtk_widget_set_size_request(ed->drawing_area, -1, -1);
     gtk_widget_add_events(
         ed->drawing_area,
         GDK_BUTTON_PRESS_MASK |
@@ -697,6 +708,35 @@ void sc_editor_set_pixbuf(ScEditorCanvas *ed, GdkPixbuf *pixbuf) {
     editor_sync_size_request(ed);
     editor_notify(ed);
     gtk_widget_queue_draw(ed->drawing_area);
+}
+
+void sc_editor_reset_to_empty(ScEditorCanvas *ed) {
+    if (!ed) return;
+    if (ed->pixbuf) {
+        g_object_unref(ed->pixbuf);
+        ed->pixbuf = NULL;
+    }
+    for (size_t i = 0; i < ed->item_count; ++i) {
+        stroke_free(&ed->items[i]);
+    }
+    ed->item_count = 0;
+    if (ed->has_active_item) {
+        stroke_free(&ed->active_item);
+        ed->has_active_item = false;
+    }
+    editor_clear_stack(ed->undo_stack, &ed->undo_len);
+    editor_clear_stack(ed->redo_stack, &ed->redo_len);
+
+    ed->crop_active = false;
+    ed->dragging_crop = false;
+    ed->dragging_ruler = false;
+    if (ed->tool == SC_TOOL_CROP) {
+        ed->tool = SC_TOOL_PEN;
+    }
+    ed->zoom = 1.0;
+    editor_sync_size_request(ed);
+    gtk_widget_queue_draw(ed->drawing_area);
+    editor_notify(ed);
 }
 
 bool sc_editor_has_image(const ScEditorCanvas *ed) {
